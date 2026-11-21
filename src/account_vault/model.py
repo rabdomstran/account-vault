@@ -141,6 +141,37 @@ def action_space(
     return elements, targets, controls
 
 
+def continuing_scroll(controls: Mapping[str, Action], history: Sequence[JsonDict]) -> str | None:
+    """Return a scroll operation that demonstrably advanced and can continue.
+
+    DEVIATION (upstream PR #212): upstream's request omitted scroll
+    position and history said only "page_changed", so on a target below
+    the second viewport the decider picked BLOCKED after one successful
+    scroll even though the same direction remained available (0/5
+    scroll tasks on upstream main in the PR's benchmark). Progress is
+    proven from the recorded scroll_before/scroll_after positions --
+    never assumed from the scroll having executed -- and the direction
+    must still be offered on the current page, so page boundaries and
+    no-op scrolls keep BLOCKED available.
+    """
+    if not history:
+        return None
+    last = history[-1]
+    choice = last.get("choice")
+    operation = (
+        {"scroll_down": "SCROLL_DOWN", "scroll_up": "SCROLL_UP"}.get(choice) if isinstance(choice, str) else None
+    )
+    before = (last.get("scroll_before") or {}).get("y")
+    after = (last.get("scroll_after") or {}).get("y")
+    # bool is an int subclass; a JSON true is not a scroll position.
+    if isinstance(before, bool) or isinstance(after, bool):
+        return None
+    if not isinstance(before, (int, float)) or not isinstance(after, (int, float)):
+        return None
+    progressed = (operation == "SCROLL_DOWN" and after > before) or (operation == "SCROLL_UP" and after < before)
+    return operation if progressed and operation in controls else None
+
+
 def build_choose_request(
     state: Page, goal: str, history: Sequence[JsonDict], settings: Settings | None = None
 ) -> tuple[JsonDict, dict[str, str], dict[str, dict[str, Action]], dict[str, Action]]:
@@ -154,7 +185,13 @@ def build_choose_request(
     }
     operations = {key: labels[key] for key in targets}
     operations.update({key: value["label"] for key, value in controls.items()})
-    operations.update(DONE="Every requirement is visibly satisfied.", BLOCKED="No supported operation can progress.")
+    operations["DONE"] = "Every requirement is visibly satisfied."
+    # #212: while the last scroll demonstrably advanced and the same
+    # direction is still offered, "no supported operation can progress"
+    # is provably false, so BLOCKED leaves the operation space. The
+    # action/decision budgets still bound a run that scrolls forever.
+    if not continuing_scroll(controls, history):
+        operations["BLOCKED"] = "No supported operation can progress."
     questions = {
         "operation": {"type": "choice", "criteria": operations, "instructions": {"goal": goal, "rules": NEXT_ACTION}}
     }
@@ -174,10 +211,21 @@ def build_choose_request(
     body = {
         "model": settings.systemone_model,
         "state": {
-            "page": {k: state[k] for k in ("url", "title", "text")},
+            # #212: scroll position/height plus which directions remain,
+            # so "scrolled and making progress" is distinguishable from
+            # "stuck at a boundary" (snapshot already reports scroll).
+            "page": {
+                **{k: state[k] for k in ("url", "title", "text")},
+                "scroll": {
+                    **state.get("scroll", {}),
+                    "can_scroll_up": "SCROLL_UP" in controls,
+                    "can_scroll_down": "SCROLL_DOWN" in controls,
+                },
+            },
             "elements": elements,
             "recent_actions": [
-                {k: h.get(k) for k in ("action", "kind", "text", "page_changed")} for h in history[-10:]
+                {k: h.get(k) for k in ("action", "kind", "text", "page_changed", "scroll_before", "scroll_after")}
+                for h in history[-10:]
             ],
         },
         "questions": questions,

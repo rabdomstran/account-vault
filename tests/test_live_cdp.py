@@ -352,3 +352,92 @@ def test_live_agent_recovers_from_a_covered_top_choice(dedicated_chrome):
         assert [h["action"] for h in agent.state["history"]] == ["Free action"]
         assert decider.calls == 3  # covered refused once, runner-up, DONE
         assert browser.evaluate("window.__clicks") == ["free"]
+
+
+# --- upstream PR #212: below-fold targets need scroll state ---------------
+# Real geometry again: the only button sits several viewports down, so it
+# is not even enumerated until scrolled into view. The decider double
+# routes every decision through the real build_choose_request, which is
+# where BLOCKED suppression and scroll state live, then takes the scroll
+# the request offers. On the pre-fix request the run could (and upstream's
+# model did) give up as BLOCKED after the first scroll.
+
+TALL_HTML = """<!doctype html><title>Deep page</title>
+<style>body{margin:0;font:18px sans-serif}.spacer{height:900px}
+#deep{width:200px;height:44px}#status{margin:20px}</style>
+<p>Top of a tall page</p><div class="spacer"></div><div class="spacer"></div>
+<div class="spacer"></div>
+<button id="deep" onclick="window.__clicks.push('deep');
+document.getElementById('status').textContent='Deep done'">Deep target</button>
+<p id="status">pending</p><script>window.__clicks=[]</script>"""
+
+
+def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome):
+    from urllib.parse import quote
+
+    from account_vault import Agent
+    from account_vault.browser import CdpBrowser
+    from account_vault.model import MappingTextProvider, build_choose_request
+
+    def stub(choice, node, operation):
+        return {
+            "choice": choice,
+            "node": node,
+            "operation": operation,
+            "target": None,
+            "confidence": 1.0,
+            "probabilities": {choice: 1.0},
+            "operation_probabilities": {operation: 1.0},
+            "target_probabilities": {},
+            "target_confidence": None,
+            "raw_answers": {},
+            "model": "scroll-stub",
+            "usage": {},
+            "latency_ms": 0,
+            "request": {},
+        }
+
+    class ScrollUntilVisible:
+        def __init__(self):
+            self.offered = []  # operations offered per decision, in order
+            self.scroll_seen = []  # page scroll payload per decision
+
+        def validate(self):
+            return None
+
+        def choose(self, state, goal, history):
+            body, operations, _targets, _controls = build_choose_request(state, goal, history)
+            self.offered.append(set(operations))
+            self.scroll_seen.append(dict(body["state"]["page"]["scroll"]))
+            if "Deep done" in state["text"]:
+                return stub("DONE", None, "DONE")
+            for a in state["actions"]:
+                if a["kind"] == "click" and a["label"] == "Deep target":
+                    return stub(a["id"], a.get("node"), "CLICK")
+            if "SCROLL_DOWN" in operations:
+                return stub("scroll_down", None, "SCROLL_DOWN")
+            return stub("BLOCKED", None, "BLOCKED")
+
+    decider = ScrollUntilVisible()
+    url = "data:text/html," + quote(TALL_HTML)
+    browser = CdpBrowser(url)
+    with Agent(
+        url, "Click the Deep target button", browser=browser, decider=decider, text_provider=MappingTextProvider({})
+    ) as agent:
+        list(agent.run())
+        assert agent.state["status"] == "done"
+        assert browser.evaluate("window.__clicks") == ["deep"]
+        scrolls = [h for h in agent.state["history"] if h["kind"] == "scroll"]
+        assert len(scrolls) >= 3  # several viewports down, not one
+        # Recorded positions advance monotonically (real viewport movement).
+        assert all(h["scroll_after"]["y"] > h["scroll_before"]["y"] for h in scrolls)
+        assert all(b["scroll_before"]["y"] >= a["scroll_after"]["y"] for a, b in zip(scrolls, scrolls[1:]))
+    # First decision (no history): BLOCKED was available. Mid-page
+    # decisions right after a scroll that advanced, with scroll_down
+    # still offered: BLOCKED was suppressed (the landing that reveals
+    # the target may sit at the page boundary, where it returns --
+    # that case is pinned offline in tests/test_regressions.py).
+    assert "BLOCKED" in decider.offered[0]
+    assert all("BLOCKED" not in ops for ops in decider.offered[1:3])
+    assert decider.scroll_seen[1]["y"] > 0 and decider.scroll_seen[1]["can_scroll_down"] is True
+    assert decider.scroll_seen[1]["can_scroll_up"] is True
