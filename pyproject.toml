@@ -48,7 +48,7 @@ packages = ["src/account_vault"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4,<10",
+    "pytest>=9.2,<10",
     "ruff>=0.14,<1",
     "pillow>=11,<13",
     "pytest-cov>=6,<8",
@@ -73,8 +73,24 @@ strict = true
 module = "browser_harness.*"
 ignore_missing_imports = true
 
-[tool.pytest.ini_options]
+# Native TOML config (pytest >= 9.0), replacing [tool.pytest.ini_options].
+# Strict mode enables strict_config/markers/parametrization_ids/xfail plus
+# any strictness options future pytest versions add; upstream recommends
+# it only with a pinned/locked pytest, which uv.lock + --locked give us.
+# Deprecation warnings are errors so removed-in-next-major API use fails
+# here instead of at the next major bump. Blanket warning errors are
+# deliberately not enabled: browser-harness's IPC client leaks
+# ResourceWarnings (detached daemon process, unclosed unix sockets)
+# that are benign in tests and outside our control.
+[tool.pytest]
+minversion = "9.2"
+strict = true
 testpaths = ["tests"]
+addopts = ["-rs"]
 markers = [
     "socket: binds a real loopback listening socket (skips where a sandbox forbids it)",
+]
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
 ]
