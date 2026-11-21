@@ -16,7 +16,9 @@ never by the decider's DONE answer (upstream design rule, kept).
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from .agent import Agent
 from .model import HeuristicDecider, MappingTextProvider
@@ -30,21 +32,21 @@ DEFAULT_GOAL = (
 DEFAULT_FILLS = {"destination": "Zurich", "check-in": "2027-03-01", "notes": "Late arrival"}
 
 
-def verify(page, expect=None):
+def verify(page: dict[str, Any], expect: dict[str, str] | None = None) -> dict[str, Any]:
     """Independent outcome checks on the resulting page (not the model's DONE)."""
     expect = {**DEFAULT_FILLS, **(expect or {})}
     actions = page["actions"]
-    by_label = {}
+    by_label: dict[str, dict[str, Any]] = {}
     for action in actions:
         by_label.setdefault(action["label"].split(" → ")[0], action)
 
-    def field_value(fragment):
+    def field_value(fragment: str) -> Any:
         for label, action in by_label.items():
             if fragment.lower() in label.lower():
                 return action.get("current_value", action.get("value", ""))
         return None
 
-    def is_checked(fragment):
+    def is_checked(fragment: str) -> bool:
         for label, action in by_label.items():
             if fragment.lower() in label.lower():
                 return str(action.get("checked", "")).lower() == "true"
@@ -63,7 +65,7 @@ def verify(page, expect=None):
     return {"passed": all(checks.values()), "checks": checks}
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the perceive-decide-act loop on a static HTML file.")
     parser.add_argument("--html", default=str(DEFAULT_HTML), help="Static HTML file to drive")
     parser.add_argument("--goal", default=DEFAULT_GOAL)

@@ -11,11 +11,21 @@ upstream is marked DEVIATION with the upstream issue that forced it.
 import json
 import math
 import time
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 import httpx
 
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
-from .settings import load_settings
+from .settings import Settings, load_settings
+
+# Page/action/decision structures are JSON-shaped dicts exchanged with
+# the snapshot, the wire, and the agent loop; values stay Any at those
+# boundaries and are validated at runtime (validate_choice).
+JsonDict = dict[str, Any]
+Action = dict[str, Any]
+Page = dict[str, Any]
+Decision = dict[str, Any]
 
 
 class ModelError(RuntimeError):
@@ -30,17 +40,17 @@ class MissingValueError(ValueError):
 # importing the package crashes when a SOCKS proxy env var is set without the
 # socksio package installed (upstream issue #16). The client is created lazily
 # on first use; tests and the offline static-file path never trigger it.
-_CLIENT = None
+_CLIENT: httpx.Client | None = None
 
 
-def _client():
+def _client() -> httpx.Client:
     global _CLIENT
     if _CLIENT is None:
         _CLIENT = httpx.Client(http2=True, timeout=25)
     return _CLIENT
 
 
-def post_json(url, key, body):
+def post_json(url: str, key: str, body: JsonDict) -> Any:
     for attempt in range(3):
         try:
             headers = {"Authorization": f"Bearer {key}"} if key else {}
@@ -69,7 +79,7 @@ def post_json(url, key, body):
     raise ModelError("Model unavailable")
 
 
-def validate_choice(answer, ids):
+def validate_choice(answer: JsonDict, ids: Mapping[str, Any]) -> JsonDict:
     """Unchanged from upstream: this strictness is the safety core of the loop."""
     try:
         probabilities = answer["probabilities"]
@@ -88,9 +98,14 @@ def validate_choice(answer, ids):
     return answer
 
 
-def action_space(actions):
+def action_space(
+    actions: Sequence[Action],
+) -> tuple[list[JsonDict], dict[str, dict[str, Action]], dict[str, Action]]:
     """One index per observed element; each operation has its own valid target choices."""
-    elements, indices, targets, controls = [], {}, {}, {}
+    elements: list[JsonDict] = []
+    indices: dict[Any, str] = {}
+    targets: dict[str, dict[str, Action]] = {}
+    controls: dict[str, Action] = {}
     operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT"}
     for action in actions:
         kind = action["kind"]
@@ -125,7 +140,9 @@ def action_space(actions):
     return elements, targets, controls
 
 
-def build_choose_request(state, goal, history, settings=None):
+def build_choose_request(
+    state: Page, goal: str, history: Sequence[JsonDict], settings: Settings | None = None
+) -> tuple[JsonDict, dict[str, str], dict[str, dict[str, Action]], dict[str, Action]]:
     """Build the single speculative-fan-out request. Extracted for testability."""
     settings = settings or load_settings()
     elements, targets, controls = action_space(state["actions"])
@@ -167,7 +184,14 @@ def build_choose_request(state, goal, history, settings=None):
     return body, operations, targets, controls
 
 
-def parse_choose_response(result, operations, targets, controls, body, started):
+def parse_choose_response(
+    result: Any,
+    operations: Mapping[str, Any],
+    targets: dict[str, dict[str, Action]],
+    controls: dict[str, Action],
+    body: JsonDict,
+    started: float,
+) -> Decision:
     """Validate and unpack a decide response.
 
     DEVIATION: upstream indexes result["answers"] / result["model"] directly,
@@ -180,10 +204,10 @@ def parse_choose_response(result, operations, targets, controls, body, started):
     answers = result["answers"]
     operation_answer = validate_choice(answers.get("operation", {}), operations)
     operation = operation_answer["choice"]
-    target = None
-    target_answer = None
-    probabilities = {}
-    node = None
+    target: str | None = None
+    target_answer: JsonDict | None = None
+    probabilities: dict[str, Any] = {}
+    node: Any = None
     if operation in targets:
         # Unused target heads cannot cause an action. Validate the head selected by the operation.
         target_answer = validate_choice(answers.get(operation.lower() + "_target", {}), targets[operation])
@@ -220,7 +244,7 @@ def parse_choose_response(result, operations, targets, controls, body, started):
     }
 
 
-def choose(state, goal, history, settings=None):
+def choose(state: Page, goal: str, history: Sequence[JsonDict], settings: Settings | None = None) -> Decision:
     settings = settings or load_settings()
     # DEVIATION: endpoint, model and key come from Settings (ADR-001: local
     # d1-2B by default, hosted Jev by env var). Upstream hardcodes
@@ -234,7 +258,7 @@ def choose(state, goal, history, settings=None):
     return parse_choose_response(result, operations, targets, controls, body, started)
 
 
-def field_context(goal, action, page, history):
+def field_context(goal: str, action: Action, page: Page, history: Sequence[JsonDict]) -> JsonDict:
     # DEVIATION: upstream sends only {label, role, value} for the field. Two
     # same-labeled fields (shipping vs billing "Street Address") then produce
     # byte-identical helper input: the text model cannot tell which field it
@@ -254,7 +278,7 @@ def field_context(goal, action, page, history):
     }
 
 
-def _reasoning_field(settings):
+def _reasoning_field(settings: Settings) -> JsonDict:
     # DEVIATION: upstream always sends a reasoning field inferred from the
     # base URL, which some OpenAI-compatible providers reject with HTTP 400
     # (upstream issue #11). Reasoning is now driven only by explicit config:
@@ -269,7 +293,7 @@ def _reasoning_field(settings):
     return {"reasoning": {"effort": mode}}
 
 
-def _parse_field_text(result):
+def _parse_field_text(result: Any) -> str:
     content = result["choices"][0]["message"]["content"]
     # DEVIATION: small models often wrap the JSON in a markdown fence;
     # upstream's bare json.loads then aborts the whole run (upstream issue
@@ -293,7 +317,7 @@ def _parse_field_text(result):
     return value
 
 
-def field_text(context, settings=None, attempts=3):
+def field_text(context: JsonDict, settings: Settings | None = None, attempts: int = 3) -> tuple[str, JsonDict]:
     settings = settings or load_settings()
     # Startup validation normally catches this in Agent; keep the guard so a
     # direct call still fails clearly instead of guessing (upstream kept this
@@ -313,7 +337,7 @@ def field_text(context, settings=None, attempts=3):
         ],
     }
     started = time.perf_counter()
-    last_error = None
+    last_error: Exception | None = None
     # DEVIATION: upstream makes exactly one attempt, so one transient
     # malformed sample or provider hiccup kills the entire run (upstream
     # issue #157). Retry the helper call (never a browser mutation) with
@@ -348,13 +372,13 @@ class SystemOneDecider:
     (upstream issues #241, #25; ADR-001 Decision 2).
     """
 
-    def __init__(self, settings=None):
+    def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
 
-    def validate(self):
+    def validate(self) -> None:
         self.settings.validate(need_decide=True)
 
-    def choose(self, state, goal, history):
+    def choose(self, state: Page, goal: str, history: Sequence[JsonDict]) -> Decision:
         return choose(state, goal, history, settings=self.settings)
 
 
@@ -374,25 +398,34 @@ class HeuristicDecider:
     def __init__(
         self,
         *,
-        fill_labels=(),
-        select_labels=(),
-        check_labels=(),
-        click_labels=("Search", "Submit"),
-        done_when=None,
-    ):
+        fill_labels: Sequence[str] = (),
+        select_labels: Sequence[str] = (),
+        check_labels: Sequence[str] = (),
+        click_labels: Sequence[str] = ("Search", "Submit"),
+        done_when: Callable[[Page], bool] | None = None,
+    ) -> None:
         self.fill_labels = [label.lower() for label in fill_labels]
         self.select_labels = [label.lower() for label in select_labels]
         self.check_labels = [label.lower() for label in check_labels]
         self.click_labels = [label.lower() for label in click_labels]
         self.done_when = done_when
 
-    def validate(self):
+    def validate(self) -> None:
         return None
 
-    def _decision(self, operation, action, targets, controls, state, goal, history):
+    def _decision(
+        self,
+        operation: str,
+        action: Action | None,
+        targets: dict[str, dict[str, Action]],
+        controls: dict[str, Action],
+        state: Page,
+        goal: str,
+        history: Sequence[JsonDict],
+    ) -> Decision:
         elements, _, _ = action_space(state["actions"])
-        target = None
-        probabilities = {}
+        target: str | None = None
+        probabilities: dict[str, float] = {}
         operations = {
             **{key: key for key in targets},
             **{key: key for key in controls},
@@ -400,7 +433,7 @@ class HeuristicDecider:
             "BLOCKED": "BLOCKED",
         }
         operation_probs = {key: float(key == operation) for key in operations}
-        target_probs = {}
+        target_probs: dict[str, float] = {}
         if action is not None and operation in targets:
             for index, candidate in targets[operation].items():
                 target_probs[index] = float(candidate["id"] == action["id"])
@@ -431,7 +464,7 @@ class HeuristicDecider:
             "request": {"model": "heuristic", "elements": elements, "goal": goal},
         }
 
-    def choose(self, state, goal, history):
+    def choose(self, state: Page, goal: str, history: Sequence[JsonDict]) -> Decision:
         _, targets, controls = action_space(state["actions"])
         clicked = {h.get("action", "").lower() for h in history}
         # 1. Fill the first still-empty configured field.
@@ -473,10 +506,10 @@ class MappingTextProvider:
     MissingValueError, mirroring the real helper's {"text": null} path.
     """
 
-    def __init__(self, values):
+    def __init__(self, values: Mapping[str, str]) -> None:
         self.values = {key.lower(): value for key, value in values.items()}
 
-    def __call__(self, context):
+    def __call__(self, context: JsonDict) -> tuple[str, JsonDict]:
         label = str(context.get("field", {}).get("label", "")).lower()
         for key, value in self.values.items():
             if key in label:

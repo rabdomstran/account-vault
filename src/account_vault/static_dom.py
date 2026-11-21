@@ -19,8 +19,10 @@ needs script behaviour belongs on the CDP backend.
 
 import html
 import re
+from collections.abc import Iterator
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any, overload
 from urllib.parse import unquote, urlparse
 
 from .browser import StalePage, fingerprint
@@ -49,7 +51,17 @@ SAFE_EXCLUDE = {"password", "file", "hidden"}
 class Element:
     __slots__ = ("tag", "attrs", "children", "parent", "node", "value", "checked", "selected_index", "text_override")
 
-    def __init__(self, tag, attrs, parent, node):
+    tag: str
+    attrs: dict[str, str]
+    children: list["Element | str"]
+    parent: "Element | None"
+    node: int
+    value: str | None
+    checked: bool
+    selected_index: int | None
+    text_override: str | None
+
+    def __init__(self, tag: str, attrs: dict[str, str], parent: "Element | None", node: int) -> None:
         self.tag = tag
         self.attrs = attrs
         self.children = []
@@ -60,62 +72,67 @@ class Element:
         self.selected_index = None
         self.text_override = None
 
-    def get(self, key, default=None):
+    @overload
+    def get(self, key: str, default: None = None) -> str | None: ...
+    @overload
+    def get(self, key: str, default: str) -> str: ...
+
+    def get(self, key: str, default: str | None = None) -> str | None:
         return self.attrs.get(key, default)
 
-    def inner_text(self):
+    def inner_text(self) -> str:
         if self.text_override is not None:
             return self.text_override
-        parts = []
+        parts: list[str] = []
         for child in self.children:
             parts.append(child if isinstance(child, str) else child.inner_text())
         return " ".join(" ".join(parts).split())
 
 
 class _Parser(HTMLParser):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.root = Element("#root", {}, None, 0)
-        self.stack = [self.root]
+        self.stack: list[Element] = [self.root]
         self.next_node = 1
         self.title = ""
 
-    def _add(self, tag, attrs):
+    def _add(self, tag: str, attrs: list[tuple[str, str | None]]) -> Element:
         clean = {k: (v if v is not None else "") for k, v in attrs}
         element = Element(tag, clean, self.stack[-1], self.next_node)
         self.next_node += 1
         self.stack[-1].children.append(element)
         return element
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         element = self._add(tag, attrs)
         if tag not in VOID:
             self.stack.append(element)
 
-    def handle_startendtag(self, tag, attrs):
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._add(tag, attrs)
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         for depth in range(len(self.stack) - 1, 0, -1):
             if self.stack[depth].tag == tag:
                 del self.stack[depth:]
                 return
 
-    def handle_data(self, data):
+    def handle_data(self, data: str) -> None:
         if data.strip():
             self.stack[-1].children.append(data)
         if self.stack[-1].tag == "title":
             self.title += data
 
 
-def is_static_source(source):
+def is_static_source(source: str | Path) -> bool:
     text = str(source)
     if text.startswith("file://"):
         return True
     return Path(text).exists() and Path(text).is_file()
 
 
-def _source_path(source):
+def _source_path(source: str | Path) -> Path:
     text = str(source)
     if text.startswith("file://"):
         return Path(unquote(urlparse(text).path))
@@ -125,14 +142,23 @@ def _source_path(source):
 class StaticBrowser:
     """Browser-contract backend over one static HTML document (see module doc)."""
 
-    def __init__(self, source):
+    path: Path | None
+    url: str
+    last_navigation: str | None
+    root: Element
+    title: str
+    by_node: dict[int, Element]
+    by_id: dict[str, Element]
+    labels_for: dict[str, Element]
+
+    def __init__(self, source: str | Path) -> None:
         self.path = _source_path(source).resolve()
         self.url = self.path.as_uri()
         self.last_navigation = None
         self._load(self.path.read_text(encoding="utf-8"))
 
     @classmethod
-    def from_html(cls, markup, url="https://example.test/"):
+    def from_html(cls, markup: str, url: str = "https://example.test/") -> "StaticBrowser":
         browser = cls.__new__(cls)
         browser.path = None
         browser.url = url
@@ -140,7 +166,7 @@ class StaticBrowser:
         browser._load(markup)
         return browser
 
-    def _load(self, markup):
+    def _load(self, markup: str) -> None:
         parser = _Parser()
         parser.feed(markup)
         self.root = parser.root
@@ -150,10 +176,12 @@ class StaticBrowser:
         self.labels_for = {}
         for element in self._walk(self.root):
             self.by_node[element.node] = element
-            if element.get("id"):
-                self.by_id.setdefault(element.get("id"), element)
-            if element.tag == "label" and element.get("for"):
-                self.labels_for.setdefault(element.get("for"), element)
+            element_id = element.get("id")
+            if element_id:
+                self.by_id.setdefault(element_id, element)
+            for_id = element.get("for")
+            if element.tag == "label" and for_id:
+                self.labels_for.setdefault(for_id, element)
         # Initialise select state from `selected` attributes (default: first option).
         for element in self._walk(self.root):
             if element.tag == "select":
@@ -163,19 +191,19 @@ class StaticBrowser:
                     0 if options else -1,
                 )
 
-    def _walk(self, element):
+    def _walk(self, element: Element) -> Iterator[Element]:
         yield element
         for child in element.children:
             if not isinstance(child, str):
                 yield from self._walk(child)
 
-    def _options(self, select):
+    def _options(self, select: Element) -> list[Element]:
         return [e for e in self._walk(select) if e.tag == "option"]
 
     # -- perception helpers (mirror snapshot.js) ---------------------------
 
-    def _visible(self, element):
-        current = element
+    def _visible(self, element: Element) -> bool:
+        current: Element | None = element
         while current is not None and current.tag != "#root":
             if "hidden" in current.attrs or current.get("aria-hidden") == "true" or "inert" in current.attrs:
                 return False
@@ -185,7 +213,7 @@ class StaticBrowser:
             current = current.parent
         return True
 
-    def _disabled(self, element):
+    def _disabled(self, element: Element) -> bool:
         if "disabled" in element.attrs:
             return True
         current = element.parent
@@ -195,16 +223,18 @@ class StaticBrowser:
             current = current.parent
         return False
 
-    def _name(self, element):
+    def _name(self, element: Element) -> str:
         labelledby = element.get("aria-labelledby", "")
         if labelledby:
             text = " ".join(self.by_id[i].inner_text() for i in labelledby.split() if i in self.by_id).strip()
             if text:
                 return text
-        if element.get("aria-label"):
-            return element.get("aria-label")
-        if element.get("id") and element.get("id") in self.labels_for:
-            text = self.labels_for[element.get("id")].inner_text()
+        aria_label = element.get("aria-label")
+        if aria_label:
+            return aria_label
+        element_id = element.get("id")
+        if element_id and element_id in self.labels_for:
+            text = self.labels_for[element_id].inner_text()
             if text:
                 return text
         current = element.parent
@@ -215,17 +245,19 @@ class StaticBrowser:
                     return text
                 break
             current = current.parent
-        if element.tag == "input" and element.get("type", "") in {"button", "submit", "reset"} and element.get("value"):
-            return element.get("value")
-        if element.get("alt"):
-            return element.get("alt")
+        value = element.get("value")
+        if element.tag == "input" and element.get("type", "") in {"button", "submit", "reset"} and value:
+            return value
+        alt = element.get("alt")
+        if alt:
+            return alt
         if element.tag != "input":
             text = element.inner_text()
             if text:
                 return text
         return element.get("title") or element.get("placeholder") or ""
 
-    def _role(self, element):
+    def _role(self, element: Element) -> str | None:
         explicit = element.get("role")
         if explicit in ROLES:
             return explicit
@@ -261,7 +293,7 @@ class StaticBrowser:
             return "button"
         return None
 
-    def _value(self, element):
+    def _value(self, element: Element) -> str:
         if element.value is not None:
             return element.value
         if element.tag == "textarea":
@@ -270,12 +302,13 @@ class StaticBrowser:
             return element.inner_text()
         if element.tag == "select":
             options = self._options(element)
-            if options and 0 <= (element.selected_index or 0) < len(options):
-                return options[element.selected_index].get("value", options[element.selected_index].inner_text())
+            selected = element.selected_index or 0
+            if options and 0 <= selected < len(options):
+                return options[selected].get("value", options[selected].inner_text())
             return ""
         return element.get("value", "")
 
-    def _scope_text(self, element):
+    def _scope_text(self, element: Element) -> str:
         current = element.parent
         while current is not None and current.tag != "#root":
             scoped = current.tag in {"form", "fieldset", "dialog", "article", "li", "tr"}
@@ -284,7 +317,7 @@ class StaticBrowser:
             current = current.parent
         return ""
 
-    def _guard(self, element):
+    def _guard(self, element: Element) -> list[Any] | None:
         if not self._visible(element):
             return None
         options = self._options(element) if element.tag == "select" else []
@@ -308,8 +341,8 @@ class StaticBrowser:
             len(options),
         ]
 
-    def _build(self):
-        actions = []
+    def _build(self) -> dict[str, Any]:
+        actions: list[dict[str, Any]] = []
         for element in self._walk(self.root):
             if element.tag in {"#root", "script", "style", "head", "title", "meta", "link"}:
                 continue
@@ -332,15 +365,13 @@ class StaticBrowser:
             )
             if role == "gridcell" and nested_button:
                 continue
-            base = {"node": element.node, "role": role, "label": self._name(element) or role}
+            base: dict[str, Any] = {"node": element.node, "role": role, "label": self._name(element) or role}
             if element.tag == "input" and input_type:
                 base["input_type"] = input_type
-            if element.get("id"):
-                base["dom_id"] = element.get("id")
-            if element.get("name"):
-                base["name"] = element.get("name")
-            if element.get("placeholder"):
-                base["placeholder"] = element.get("placeholder")
+            for attr, key in (("id", "dom_id"), ("name", "name"), ("placeholder", "placeholder")):
+                attr_value = element.get(attr)
+                if attr_value:
+                    base[key] = attr_value
             scope = self._scope_text(element)
             if scope:
                 base["scope"] = scope
@@ -351,8 +382,8 @@ class StaticBrowser:
                 base["checked"] = str(element.checked).lower()
             if element.tag == "select":
                 options = self._options(element)
-                valid = options and element.selected_index >= 0
-                current = options[element.selected_index].inner_text() if valid else ""
+                selected = element.selected_index
+                current = options[selected].inner_text() if options and selected is not None and selected >= 0 else ""
                 for option_index, option in enumerate(options):
                     if option_index == element.selected_index or "disabled" in option.attrs:
                         continue
@@ -379,7 +410,8 @@ class StaticBrowser:
                 actions.append({**base, "kind": "fill" if editable else "click", "value": value})
                 if editable:
                     actions.append({**base, "kind": "click", "value": value, "label": "Open " + base["label"]})
-        words, length = [], 0
+        words: list[str] = []
+        length = 0
         for element in self._walk(self.root):
             skipped = element.tag in {"script", "style", "noscript", "template", "head", "title"}
             if skipped or not self._visible(element):
@@ -401,18 +433,18 @@ class StaticBrowser:
                 if e.tag in {"input", "textarea", "select"} and e.get("type", "").lower() not in SAFE_EXCLUDE
             ],
         ]
-        guards = {}
+        guards: dict[str, Any] = {}
         for action in actions:
             if str(action["node"]) not in guards:
                 guards[str(action["node"])] = self._guard(self.by_node[action["node"]])
         semantics = [dict(action) for action in actions]
-        marker = [self.url, self.title, text, semantics, page_key[1]]
+        marker: list[Any] = [self.url, self.title, text, semantics, page_key[1]]
         omitted = max(0, len(actions) - 250)
         actions = actions[:250]
         for index, action in enumerate(actions):
             action["id"] = f"e{index + 1}"
         actions.append({"id": "wait", "kind": "wait", "label": "Wait for the page to update"})
-        page = {
+        page: dict[str, Any] = {
             "url": self.url,
             "title": self.title,
             "w": 1120,
@@ -430,23 +462,23 @@ class StaticBrowser:
 
     # -- browser contract ---------------------------------------------------
 
-    def observe(self, screenshot=False):
+    def observe(self, screenshot: bool = False) -> dict[str, Any]:
         # Static pages have no pixels; screenshots are simply absent. Agent
         # recording checks for the key before writing (live backend always
         # provides one when requested).
         return self._build()
 
-    def fresh(self, page, action=None):
+    def fresh(self, page: dict[str, Any], action: dict[str, Any] | None = None) -> bool:
         current = self._build()
         if action is not None and action.get("kind") in {"click", "select"}:
             node = action.get("node")
             if type(node) is not int:
                 return False
             now = [current["page_key"], current["guards"].get(str(node))]
-            return now == [page["page_key"], page["guards"].get(str(node))]
-        return current["marker"] == page["marker"]
+            return bool(now == [page["page_key"], page["guards"].get(str(node))])
+        return bool(current["marker"] == page["marker"])
 
-    def act(self, action, page, text=None):
+    def act(self, action: dict[str, Any], page: dict[str, Any], text: str | None = None) -> dict[str, Any]:
         if not self.fresh(page, action):
             raise StalePage("Page changed since this decision. Observe again.")
         kind = action["kind"]
@@ -454,7 +486,8 @@ class StaticBrowser:
             return {"executed": action["id"]}
         if kind == "scroll":
             return {"executed": action["id"]}
-        element = self.by_node.get(action.get("node"))
+        node = action.get("node")
+        element = self.by_node.get(node) if type(node) is int else None
         if element is None or not self._visible(element) or self._disabled(element):
             if kind == "select":
                 raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
@@ -477,7 +510,7 @@ class StaticBrowser:
             self._click(element)
         return {"executed": action["id"]}
 
-    def _click(self, element):
+    def _click(self, element: Element) -> None:
         input_type = element.get("type", "").lower() if element.tag == "input" else ""
         if input_type == "checkbox":
             element.checked = not element.checked
@@ -488,8 +521,8 @@ class StaticBrowser:
                 if other.tag == "input" and other.get("type", "").lower() == "radio" and other.get("name") == name:
                     other.checked = other is element
             return
-        if element.tag == "a" and element.get("href"):
-            href = element.get("href")
+        href = element.get("href")
+        if element.tag == "a" and href:
             self.last_navigation = href
             if href.startswith("#"):
                 return
@@ -506,8 +539,8 @@ class StaticBrowser:
         # fixtures declare their behaviour instead of the backend guessing.
         self._submit(element)
 
-    def _submit(self, element):
-        targets = []
+    def _submit(self, element: Element) -> None:
+        targets: list[Element] = []
         reveals = element.get("data-reveals", "")
         for token in reveals.split(","):
             token = token.strip().lstrip("#")
@@ -521,7 +554,7 @@ class StaticBrowser:
             targets = [e for e in self._walk(scope) if "data-results" in e.attrs]
             if not targets and "results" in self.by_id:
                 targets = [self.by_id["results"]]
-        values = {}
+        values: dict[str, str] = {}
         for field in self._walk(self.root):
             if field.tag in {"input", "textarea", "select"} or "contenteditable" in field.attrs:
                 key = field.get("name") or field.get("id")
@@ -538,5 +571,5 @@ class StaticBrowser:
                     rendered = rendered.replace("{" + key + "}", html.unescape(value))
                 target.text_override = rendered
 
-    def close(self):
+    def close(self) -> None:
         return None

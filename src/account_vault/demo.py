@@ -15,6 +15,7 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from .agent import Agent
@@ -28,11 +29,11 @@ ROOT = Path(__file__).parent
 PORT = int(os.environ.get("ACCOUNT_VAULT_DEMO_PORT", os.environ.get("TYPESAFE_DEMO_PORT", "8766")))
 TOKEN = secrets.token_urlsafe(32)
 LOCK = threading.Lock()
-AGENT = None
+AGENT: Agent | None = None
 SETTINGS = load_settings()
 
 
-def origin():
+def origin() -> str:
     # DEVIATION: computed from the live PORT (upstream freezes it at import)
     # so tests can bind an ephemeral port without rewriting module state.
     return f"http://127.0.0.1:{PORT}"
@@ -44,22 +45,24 @@ def origin():
 # there is deliberately no second parser here.
 
 
-def response_state():
-    state = AGENT.snapshot() if AGENT else {"page": None, "status": "idle", "history": [], "decision": None}
+def response_state() -> dict[str, Any]:
+    state: dict[str, Any] = (
+        AGENT.snapshot() if AGENT else {"page": None, "status": "idle", "history": [], "decision": None}
+    )
     # DEVIATION: model name from Settings, not an env fallback that
     # disagrees with .env.example (upstream issue #36); budget key kept
     # as max_steps for the bundled app.js, value is MAX_ACTIONS (#55).
     return {**state, "text_model": SETTINGS.text_model, "max_steps": MAX_ACTIONS}
 
 
-def close_browser():
+def close_browser() -> None:
     global AGENT
     if AGENT:
         AGENT.close()
         AGENT = None
 
 
-def _offline_agent(scenario, goal):
+def _offline_agent(scenario: str, goal: str) -> Agent:
     """DEVIATION (new): upstream's inspector needs a live Chrome daemon
     plus paid model APIs for every scenario, so it cannot run in CI or
     before credentials exist. Offline mode drives the bundled static
@@ -85,7 +88,7 @@ def _offline_agent(scenario, goal):
     return Agent(str(catalog), goal, decider=decider, text_provider=MappingTextProvider(fills))
 
 
-def command(name, body):
+def command(name: str, body: dict[str, Any]) -> dict[str, Any]:
     global AGENT
     if name == "reset":
         scenario = body.get("scenario", "flights")
@@ -101,9 +104,9 @@ def command(name, body):
             raise ValueError("Enter 1–2,000 characters")
         close_browser()
         if mode == "offline":
-            AGENT = _offline_agent(scenario, goal)
+            agent = _offline_agent(scenario, goal)
         else:
-            AGENT = Agent(
+            agent = Agent(
                 "https://www.google.com/travel/flights?hl=en"
                 if scenario == "flights"
                 else f"{origin()}/fixture.html?scenario={scenario}",
@@ -112,8 +115,9 @@ def command(name, body):
                 record_dir=Path.cwd() / "artifacts" / "frames" if body.get("record") else None,
                 settings=SETTINGS,
             )
-        AGENT.state["scenario"] = scenario
-        AGENT.state["mode"] = mode
+        AGENT = agent
+        agent.state["scenario"] = scenario
+        agent.state["mode"] = mode
     else:
         if AGENT is None:
             raise ValueError("Start a demo first")
@@ -122,17 +126,17 @@ def command(name, body):
 
 
 class Handler(BaseHTTPRequestHandler):
-    def send(self, status, content, mime="application/json"):
-        content = content if isinstance(content, bytes) else content.encode()
+    def send(self, status: int, content: str | bytes, mime: str = "application/json") -> None:
+        data = content if isinstance(content, bytes) else content.encode()
         self.send_response(status)
         self.send_header("Content-Type", mime)
-        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(content)
+        self.wfile.write(data)
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         if self.headers.get("Host") != f"127.0.0.1:{PORT}":
             return self.send(403, "Forbidden", "text/plain")
         path = urlparse(self.path).path
@@ -159,7 +163,7 @@ class Handler(BaseHTTPRequestHandler):
         content = (ROOT / "static" / name).read_text(encoding="utf-8").replace("__TOKEN__", TOKEN)
         self.send(200, content, mime + "; charset=utf-8")
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         if (
             self.headers.get("Host") != f"127.0.0.1:{PORT}"
             or self.headers.get("X-Demo-Token") != TOKEN
@@ -182,11 +186,11 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             LOCK.release()
 
-    def log_message(self, *_args):
+    def log_message(self, *_args: Any) -> None:
         pass
 
 
-def make_server(port=None):
+def make_server(port: int | None = None) -> ThreadingHTTPServer:
     """Bind the inspector (ephemeral ports allowed, for tests)."""
     global PORT
     server = ThreadingHTTPServer(("127.0.0.1", PORT if port is None else port), Handler)
@@ -194,7 +198,7 @@ def make_server(port=None):
     return server
 
 
-def main():
+def main() -> None:
     atexit.register(close_browser)
     server = make_server()
     print(f"account-vault inspector: {origin()}", flush=True)

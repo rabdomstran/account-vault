@@ -46,14 +46,14 @@ class Settings:
     text_model_reasoning: str = "none"
 
     @property
-    def systemone_url(self):
+    def systemone_url(self) -> str:
         return self.systemone_base_url.rstrip("/") + "/" + self.systemone_path.lstrip("/")
 
     @property
-    def systemone_is_local(self):
+    def systemone_is_local(self) -> bool:
         return urlparse(self.systemone_base_url).hostname in {"127.0.0.1", "localhost", "::1"}
 
-    def validate(self, *, need_decide=True, need_text=False):
+    def validate(self, *, need_decide: bool = True, need_text: bool = False) -> None:
         """Fail fast at startup instead of mid-run (upstream issue #36)."""
         if need_decide and not self.systemone_is_local and not self.systemone_api_key:
             raise ConfigError(
@@ -67,7 +67,7 @@ class Settings:
             )
 
 
-def load_settings(env_file=None):
+def load_settings(env_file: str | Path | None = None) -> Settings:
     """Load .env (if present) with python-dotenv, then read the environment.
 
     Real environment variables win over .env values, matching upstream's

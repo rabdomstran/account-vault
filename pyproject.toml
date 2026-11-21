@@ -51,6 +51,7 @@ dev = [
     "ruff>=0.14,<1",
     "pillow>=11,<13",
     "pytest-cov>=6,<8",
+    "mypy>=2.4,<3",
 ]
 
 [tool.ruff]
@@ -59,6 +60,17 @@ src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+files = "src/account_vault"
+strict = true
+
+# browser-harness ships no py.typed/stubs; it is only touched through
+# the lazy _harness() indirection in browser.py.
+[[tool.mypy.overrides]]
+module = "browser_harness.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

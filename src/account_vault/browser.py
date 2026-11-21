@@ -11,27 +11,30 @@ import hashlib
 import json
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 # DEVIATION: upstream imports browser_harness at module top. It is imported
 # lazily inside the CDP paths here so `import account_vault`, the offline
 # static-file backend, and unit tests never require a running Chrome/daemon
 # (same import-time-crash concern as upstream issue #16).
-_cdp = None
-_ensure_daemon = None
+_cdp: Callable[..., Any] | None = None
+_ensure_daemon: Callable[..., Any] | None = None
 
 
-def _harness():
+def _harness() -> tuple[Callable[..., Any], Callable[..., Any]]:
     global _cdp, _ensure_daemon
-    if _cdp is None:
+    if _cdp is None or _ensure_daemon is None:
         from browser_harness.admin import ensure_daemon
         from browser_harness.helpers import cdp
 
         _cdp, _ensure_daemon = cdp, ensure_daemon
+    assert _cdp is not None and _ensure_daemon is not None  # set just above
     return _cdp, _ensure_daemon
 
 
-def cdp(method, **params):
+def cdp(method: str, **params: Any) -> Any:
     """Indirection kept so tests can monkeypatch account_vault.browser.cdp."""
     real_cdp, _ = _harness()
     return real_cdp(method, **params)
@@ -47,10 +50,13 @@ class StalePage(ValueError):
 
 
 class CdpBrowser:
-    def __init__(self, url):
+    after_input: dict[str, Any] | None
+
+    def __init__(self, url: str) -> None:
         _, ensure_daemon = _harness()
         ensure_daemon()
-        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        self.after_input = None
+        self.target: str | None = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
         # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
@@ -62,16 +68,16 @@ class CdpBrowser:
                 break
             time.sleep(0.02)
 
-    def call(self, method, **params):
+    def call(self, method: str, **params: Any) -> Any:
         return cdp(method, session_id=self.session, **params)
 
-    def evaluate(self, expression):
+    def evaluate(self, expression: str) -> Any:
         response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
         if response.get("exceptionDetails"):
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
 
-    def observe(self, screenshot=True):
+    def observe(self, screenshot: bool = True) -> dict[str, Any]:
         if getattr(self, "after_input", None):
             action, self.after_input = self.after_input, None
             # This is read-only and happens after execution was logged, even if navigation interrupts it.
@@ -115,7 +121,7 @@ class CdpBrowser:
                 time.sleep(0.02)
         raise StalePage("Page did not settle")
 
-    def fresh(self, page, action=None):
+    def fresh(self, page: dict[str, Any], action: dict[str, Any] | None = None) -> bool:
         if action is not None and action["kind"] in {"click", "select"}:
             node = action["node"]
             if type(node) is not int:
@@ -124,10 +130,10 @@ class CdpBrowser:
                 "(() => { const c=window.__jevFast; "
                 f"return c ? [c.pageKey(),c.guard(c.nodes.get({node}))] : null; }})()"
             )
-            return current == [page["page_key"], page["guards"].get(str(node))]
-        return self.evaluate(MARKER) == page["marker"]
+            return bool(current == [page["page_key"], page["guards"].get(str(node))])
+        return bool(self.evaluate(MARKER) == page["marker"])
 
-    def act(self, action, page, text=None):
+    def act(self, action: dict[str, Any], page: dict[str, Any], text: str | None = None) -> Any:
         if not self.fresh(page, action):
             raise StalePage("Page changed since this decision. Observe again.")
         if action["kind"] == "wait":
@@ -136,7 +142,7 @@ class CdpBrowser:
         self.after_input = action if action["kind"] != "wait" else None
         return result
 
-    def close(self):
+    def close(self) -> None:
         if getattr(self, "target", None):
             cdp("Target.closeTarget", targetId=self.target)
             self.target = None
@@ -146,19 +152,19 @@ class CdpBrowser:
 Browser = CdpBrowser
 
 
-def fingerprint(state):
+def fingerprint(state: dict[str, Any]) -> str:
     content = {k: state[k] for k in ("url", "text", "actions", "scroll")}
     return hashlib.sha256(json.dumps(content, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def browser_operation(request):
+def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
     operation = request["operation"]
     session = request["session"]
 
-    def call(method, **params):
+    def call(method: str, **params: Any) -> Any:
         return cdp(method, session_id=session, **params)
 
-    def evaluate(expression):
+    def evaluate(expression: str) -> Any:
         result = call("Runtime.evaluate", expression=expression, returnByValue=True)
         if result.get("exceptionDetails"):
             if operation == "act" and request["action"]["kind"] == "select":
@@ -233,7 +239,7 @@ def browser_operation(request):
                     call("Input.insertText", text=request["text"])
         return {"executed": action["id"]}
 
-    info = evaluate(READ_STATE)
+    info: dict[str, Any] = evaluate(READ_STATE)
     if info is None:
         raise StalePage("Document is navigating")
     info["fingerprint"] = fingerprint(info)
