@@ -216,6 +216,21 @@ def test_field_context_distinguishes_same_labeled_fields():
     assert a["field"]["node"] == 41 and b["field"]["scope"] == "Billing address"
 
 
+def test_field_context_tells_the_helper_the_native_value_format():
+    # Upstream issue #227: native controls commit only their canonical
+    # shape and the executor now rejects anything else. The helper must
+    # see the required shape, or a goal saying "March 1" produces a
+    # value the fill can only refuse.
+    p = page()
+    date = {"label": "Check-in", "role": "textbox", "value": "", "node": 9, "input_type": "date"}
+    field = model.field_context("Check in on March 1, 2027", date, p, [])["field"]
+    assert field["input_type"] == "date"
+    assert field["required_format"].startswith("YYYY-MM-DD")
+
+    text = {"label": "City", "role": "textbox", "value": "", "node": 10, "input_type": "text"}
+    assert "required_format" not in model.field_context("g", text, p, [])["field"]
+
+
 def test_cached_text_is_not_reused_for_a_different_node(monkeypatch):
     actions = [
         {"id": "e1", "kind": "fill", "label": "Street Address", "role": "textbox", "value": "", "node": 41},
@@ -610,6 +625,95 @@ def test_advancing_scrolls_are_progress_not_a_cycle():
     assert runner.state["status"] == "ready"
     assert len(runner.state["history"]) == 5
     assert all(h["page_changed"] for h in runner.state["history"])
+    # Each scroll records where it started and landed (#212): the chain
+    # is the evidence continuing_scroll() and the next request rely on.
+    assert [h["scroll_before"]["y"] for h in runner.state["history"]] == [0, 560, 1120, 1680, 2240]
+    assert [h["scroll_after"]["y"] for h in runner.state["history"]] == [560, 1120, 1680, 2240, 2800]
+
+
+# --- upstream PR #212: scroll state for the decider -------------------------
+# The request used to omit scroll position/height and history said only
+# "page_changed", so a target below the second viewport got BLOCKED after
+# one successful scroll (0/5 scroll tasks on upstream main). Adapted from
+# the PR's own tests to this port's build_choose_request/SETTINGS shape.
+
+
+def _choice(ids, selected):
+    return {"choice": selected, "confidence": 1.0, "probabilities": {i: float(i == selected) for i in ids}}
+
+
+@pytest.mark.parametrize(
+    ("choice_id", "before_y", "after_y", "operation"),
+    [
+        ("scroll_down", 0, 560, "SCROLL_DOWN"),
+        ("scroll_up", 560, 0, "SCROLL_UP"),
+    ],
+)
+def test_scroll_continuation_tracks_both_directions(choice_id, before_y, after_y, operation):
+    history = [{"choice": choice_id, "scroll_before": {"y": before_y}, "scroll_after": {"y": after_y}}]
+    assert model.continuing_scroll({operation: {}}, history) == operation
+
+
+def test_successful_incremental_scroll_sends_position_and_cannot_block(monkeypatch):
+    p = page(
+        [
+            {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560},
+            {"id": "scroll_up", "kind": "scroll", "label": "Scroll up", "delta": -560},
+        ]
+    )
+    p["scroll"] = {"y": 560, "height": 1759}
+    history = [
+        {
+            "action": "Scroll down",
+            "kind": "scroll",
+            "choice": "scroll_down",
+            "page_changed": True,
+            "scroll_before": {"y": 0, "height": 1759},
+            "scroll_after": {"y": 560, "height": 1759},
+        }
+    ]
+
+    def post(_url, _key, body):
+        operations = body["questions"]["operation"]["criteria"]
+        assert "BLOCKED" not in operations
+        assert body["state"]["page"]["scroll"] == {
+            "y": 560,
+            "height": 1759,
+            "can_scroll_up": True,
+            "can_scroll_down": True,
+        }
+        assert body["state"]["recent_actions"][-1]["scroll_before"]["y"] == 0
+        assert body["state"]["recent_actions"][-1]["scroll_after"]["y"] == 560
+        return {"model": "test", "answers": {"operation": _choice(operations, "SCROLL_DOWN")}}
+
+    monkeypatch.setattr(model, "post_json", post)
+    assert model.choose(p, "Find a lower target", history, settings=SETTINGS)["choice"] == "scroll_down"
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        [],
+        # No-op scroll: executed but the viewport never moved.
+        [{"kind": "scroll", "choice": "scroll_down", "scroll_before": {"y": 560}, "scroll_after": {"y": 560}}],
+        # Progressed up, but only scroll_down is offered now (boundary).
+        [{"kind": "scroll", "choice": "scroll_up", "scroll_before": {"y": 560}, "scroll_after": {"y": 0}}],
+        # Post-action observation failed: no landing position recorded.
+        [{"kind": "scroll", "choice": "scroll_down", "scroll_before": {"y": 0}}],
+        # Last action was not a scroll at all.
+        [{"kind": "click", "choice": "e3", "scroll_before": {"y": 0}, "scroll_after": {"y": 560}}],
+    ],
+)
+def test_blocked_remains_available_without_proven_scroll_progress(monkeypatch, history):
+    p = page([{"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560}])
+
+    def post(_url, _key, body):
+        operations = body["questions"]["operation"]["criteria"]
+        assert "BLOCKED" in operations
+        return {"model": "test", "answers": {"operation": _choice(operations, "BLOCKED")}}
+
+    monkeypatch.setattr(model, "post_json", post)
+    assert model.choose(p, "Find a lower target", history, settings=SETTINGS)["choice"] == "BLOCKED"
 
 
 def test_refilling_a_field_with_new_values_is_not_a_cycle():

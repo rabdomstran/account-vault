@@ -455,6 +455,13 @@ class Agent:
                     "usage": decision["usage"],
                     "executed_ms": self._elapsed(state),
                     "elapsed_ms": state["elapsed_ms"],
+                    # DEVIATION (upstream PR #212): record where a scroll
+                    # started; scroll_after lands with the post-action
+                    # observation below. Together they prove to the next
+                    # decision whether the scroll advanced or hit a
+                    # boundary. If that observation fails, scroll_after
+                    # stays absent and no progress is assumed.
+                    **({"scroll_before": dict(page.get("scroll", {}))} if action["kind"] == "scroll" else {}),
                 }
             )
             state["page"] = state["browser"].observe(screenshot=self.screenshots)
@@ -464,6 +471,8 @@ class Agent:
                 url=state["page"]["url"],
                 elapsed_ms=state["elapsed_ms"],
             )
+            if action["kind"] == "scroll":
+                state["history"][-1]["scroll_after"] = dict(state["page"].get("scroll", {}))
             if self.record_dir is not None and state["page"].get("screenshot"):
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])

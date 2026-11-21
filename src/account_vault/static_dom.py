@@ -17,7 +17,9 @@ submit (see _submit). There is no JavaScript execution; a fixture that
 needs script behaviour belongs on the CDP backend.
 """
 
+import datetime
 import html
+import math
 import re
 from collections.abc import Iterator
 from html.parser import HTMLParser
@@ -25,7 +27,7 @@ from pathlib import Path
 from typing import Any, overload
 from urllib.parse import unquote, urlparse
 
-from .browser import StalePage, fingerprint
+from .browser import NATIVE_FILL_TYPES, StalePage, fingerprint
 
 VOID = {"input", "br", "img", "hr", "meta", "link", "area", "base", "col", "embed", "source", "track", "wbr"}
 ROLES = {
@@ -46,6 +48,56 @@ ROLES = {
     "slider",
 }
 SAFE_EXCLUDE = {"password", "file", "hidden"}
+
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+_MONTH_RE = re.compile(r"(\d{4})-(\d{2})\Z")
+_WEEK_RE = re.compile(r"(\d{4})-W(\d{2})\Z")
+_TIME_RE = re.compile(r"\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?\Z")
+_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}\Z")
+
+
+def valid_native_value(input_type: str, text: str) -> bool:
+    """Mirror the browser's value sanitisation for NATIVE_FILL_TYPES.
+
+    The CDP backend lets Chrome judge (an invalid date/time string
+    sanitises to empty); offline there is no browser, so the same
+    shapes are checked here and a bad value is rejected identically
+    instead of being stored as if the fill worked (upstream #227).
+    Range bounds/step are the browser's business on the live path and
+    are not modelled here beyond finiteness, matching the JS guard.
+    """
+    try:
+        if input_type == "date":
+            if not _DATE_RE.match(text):
+                return False
+            datetime.date.fromisoformat(text)
+            return True
+        if input_type == "month":
+            match = _MONTH_RE.match(text)
+            return match is not None and 1 <= int(match.group(2)) <= 12
+        if input_type == "week":
+            match = _WEEK_RE.match(text)
+            if match is None:
+                return False
+            datetime.date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
+            return True
+        if input_type == "time":
+            if not _TIME_RE.match(text):
+                return False
+            datetime.time.fromisoformat(text)
+            return True
+        if input_type == "datetime-local":
+            date_part, separator, time_part = text.partition("T")
+            if not separator:
+                date_part, separator, time_part = text.partition(" ")
+            return bool(separator) and valid_native_value("date", date_part) and valid_native_value("time", time_part)
+        if input_type == "color":
+            return _COLOR_RE.match(text) is not None
+        if input_type == "range":
+            return bool(text.strip()) and math.isfinite(float(text))
+    except ValueError:
+        return False
+    return True
 
 
 class Element:
@@ -495,6 +547,15 @@ class StaticBrowser:
         if kind == "fill":
             if "readonly" in element.attrs or element.get("aria-readonly") == "true":
                 raise StalePage("Target changed or is covered. Observe again.")
+            # Same verdict as the CDP native fill (#227): an unusable
+            # value fails loudly with the field left untouched, instead
+            # of being stored as if the fill had committed.
+            input_type = element.get("type", "").lower() if element.tag == "input" else ""
+            if input_type in NATIVE_FILL_TYPES:
+                if not text or not text.strip():
+                    raise RuntimeError(f"Native input fill rejected: no value supplied for {input_type} input")
+                if not valid_native_value(input_type, text):
+                    raise RuntimeError(f"Native input fill rejected: not a valid {input_type} value: {text}")
             if "contenteditable" in element.attrs or element.tag == "textarea":
                 element.text_override = text or ""
             element.value = text or ""

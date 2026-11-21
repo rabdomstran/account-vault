@@ -99,9 +99,17 @@ function render() {
     controls();
     return;
   }
-  $("empty").hidden = true;
   // DEVIATION: offline (static) pages have no screenshot; upstream would
-  // set src to "...base64,undefined" and show a broken image.
+  // set src to "...base64,undefined" and show a broken image. A null
+  // screenshot means capture timed out on a live page (#14): say so
+  // instead of showing a blank viewport the loop no longer matches.
+  const captureTimedOut = page.screenshot === null;
+  $("empty").hidden = !captureTimedOut;
+  if (captureTimedOut) {
+    $("empty").querySelector("h2").textContent = "Live preview unavailable.";
+    $("empty").querySelector("p:last-child").textContent =
+      "Screenshot capture timed out. The indexed-element loop is still running.";
+  }
   $("screenshot").hidden = !page.screenshot;
   if (page.screenshot) $("screenshot").src = `data:image/jpeg;base64,${page.screenshot}`;
   $("url").textContent = page.url;
@@ -133,7 +141,7 @@ function render() {
     const index=String(i+1);
     return `<div class="target ${index === selectedIndex ? 'selected' : ''}" data-action="${index}" style="left:${100*a.rect.x/page.w}%;top:${100*a.rect.y/page.h}%;width:${100*a.rect.w/page.w}%;height:${100*a.rect.h/page.h}%"><span>${index}</span></div>`;
   }).join('');
-  $("targets").hidden = !$("overlays").checked;
+  $("targets").hidden = !page.screenshot || !$("overlays").checked;
   $("history").innerHTML = state.history.length
     ? state.history
         .map(
@@ -201,7 +209,7 @@ $("stop").addEventListener("click", () => {
   controls();
 });
 $("overlays").addEventListener("change", () => {
-  $("targets").hidden = !$("overlays").checked;
+  $("targets").hidden = !state?.page?.screenshot || !$("overlays").checked;
 });
 $("choices").addEventListener("pointerover", (event) => {
   const id = event.target.closest("[data-action]")?.dataset.action;

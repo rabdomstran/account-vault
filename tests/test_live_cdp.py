@@ -212,6 +212,93 @@ def test_live_covered_control_leaves_offer_until_uncovered(dedicated_chrome):
         browser.close()
 
 
+# --- upstream issue #227 (fill half): native controls must commit ---------
+# The issue's own repro form (text + two dates + select + checkbox +
+# submit): before the fix both dates enumerated but Input.insertText
+# committed nothing -- value stayed empty, zero input/change events, and
+# the form submitted blank dates as success. This is the live regression
+# the drift review asks for; an offline test passed even while broken.
+
+NATIVE_HTML = """<!doctype html><title>Booking</title>
+<form id="f">
+ <label>Destino <input type="text" id="dest" name="dest"></label>
+ <label>Check-in <input type="date" id="ci" name="ci"></label>
+ <label>Check-out <input type="date" id="co" name="co" value="2027-01-15"></label>
+ <label>Pickup time <input type="time" id="pt" name="pt"></label>
+ <label>Shade <input type="color" id="sh" name="sh"></label>
+ <label>Max price <input type="range" id="mp" name="mp" min="0" max="100" value="10"></label>
+ <label>Guests <select id="g" name="g"><option value="1">1</option><option value="2">2</option></select></label>
+ <label><input type="checkbox" id="fc" name="fc"> Free cancellation</label>
+ <button type="submit">Search</button>
+</form>
+<script>window.__events=[];for (const id of ['ci','co','pt','sh','mp','dest'])
+ for (const t of ['input','change'])
+  document.getElementById(id).addEventListener(t,e=>window.__events.push(id+':'+t+':'+e.target.value));
+ document.getElementById('f').addEventListener('submit',e=>{e.preventDefault();
+  window.__submitted=new URLSearchParams(new FormData(e.target)).toString();});</script>"""
+
+
+def test_live_native_fills_commit_and_rejects_loudly(dedicated_chrome):
+    from urllib.parse import quote
+
+    from account_vault.browser import CdpBrowser
+
+    browser = CdpBrowser("data:text/html," + quote(NATIVE_HTML))
+    try:
+
+        def fill(label, text):
+            page = browser.observe(screenshot=False)
+            action = next(a for a in page["actions"] if a["label"] == label and a["kind"] == "fill")
+            browser.act(action, page, text=text)
+
+        def value(element_id):
+            return browser.evaluate(f"document.getElementById('{element_id}').value")
+
+        page = browser.observe(screenshot=False)
+        labels = [a["label"] for a in page["actions"]]
+        assert "Check-in" in labels and "Check-out" in labels  # enumeration (#215/#227)
+
+        # The reported failure: a valid date now commits, with the events
+        # a real edit fires, in order.
+        fill("Check-in", "2027-03-01")
+        assert value("ci") == "2027-03-01"
+        assert browser.evaluate("window.__events") == ["ci:input:2027-03-01", "ci:change:2027-03-01"]
+
+        # An invalid value fails loudly, leaves the preset untouched and
+        # fires nothing -- it never reaches the form as an empty date.
+        with pytest.raises(RuntimeError, match="Native input fill rejected: not a valid date value"):
+            fill("Check-out", "March 5, 2027")
+        assert value("co") == "2027-01-15"
+        assert browser.evaluate("window.__events.filter(e=>e.startsWith('co:'))") == []
+
+        fill("Check-out", "2027-03-05")
+        fill("Pickup time", "09:30")
+        fill("Shade", "#FF0000")  # the browser canonicalises case
+        fill("Max price", "42")
+        assert (value("co"), value("pt"), value("sh"), value("mp")) == ("2027-03-05", "09:30", "#ff0000", "42")
+
+        # Color/range sanitise invalid input to a default rather than
+        # empty, so the executor shape-checks them up front.
+        with pytest.raises(RuntimeError, match="not a valid color value"):
+            fill("Shade", "red")
+        with pytest.raises(RuntimeError, match="not a valid range value"):
+            fill("Max price", "loud")
+        assert (value("sh"), value("mp")) == ("#ff0000", "42")
+
+        # The plain-text typing path is untouched by the native branch.
+        fill("Destino", "Lisbon")
+        assert value("dest") == "Lisbon"
+
+        page = browser.observe(screenshot=False)
+        search = next(a for a in page["actions"] if a["label"] == "Search" and a["kind"] == "click")
+        browser.act(search, page)
+        submitted = browser.evaluate("window.__submitted")
+        assert "ci=2027-03-01" in submitted and "co=2027-03-05" in submitted
+        assert "pt=09%3A30" in submitted and "dest=Lisbon" in submitted
+    finally:
+        browser.close()
+
+
 def test_live_agent_recovers_from_a_covered_top_choice(dedicated_chrome):
     # The run-level case the decision layer misses: the decider's top
     # choice is covered, a hittable runner-up completes the goal. Without
@@ -265,3 +352,92 @@ def test_live_agent_recovers_from_a_covered_top_choice(dedicated_chrome):
         assert [h["action"] for h in agent.state["history"]] == ["Free action"]
         assert decider.calls == 3  # covered refused once, runner-up, DONE
         assert browser.evaluate("window.__clicks") == ["free"]
+
+
+# --- upstream PR #212: below-fold targets need scroll state ---------------
+# Real geometry again: the only button sits several viewports down, so it
+# is not even enumerated until scrolled into view. The decider double
+# routes every decision through the real build_choose_request, which is
+# where BLOCKED suppression and scroll state live, then takes the scroll
+# the request offers. On the pre-fix request the run could (and upstream's
+# model did) give up as BLOCKED after the first scroll.
+
+TALL_HTML = """<!doctype html><title>Deep page</title>
+<style>body{margin:0;font:18px sans-serif}.spacer{height:900px}
+#deep{width:200px;height:44px}#status{margin:20px}</style>
+<p>Top of a tall page</p><div class="spacer"></div><div class="spacer"></div>
+<div class="spacer"></div>
+<button id="deep" onclick="window.__clicks.push('deep');
+document.getElementById('status').textContent='Deep done'">Deep target</button>
+<p id="status">pending</p><script>window.__clicks=[]</script>"""
+
+
+def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome):
+    from urllib.parse import quote
+
+    from account_vault import Agent
+    from account_vault.browser import CdpBrowser
+    from account_vault.model import MappingTextProvider, build_choose_request
+
+    def stub(choice, node, operation):
+        return {
+            "choice": choice,
+            "node": node,
+            "operation": operation,
+            "target": None,
+            "confidence": 1.0,
+            "probabilities": {choice: 1.0},
+            "operation_probabilities": {operation: 1.0},
+            "target_probabilities": {},
+            "target_confidence": None,
+            "raw_answers": {},
+            "model": "scroll-stub",
+            "usage": {},
+            "latency_ms": 0,
+            "request": {},
+        }
+
+    class ScrollUntilVisible:
+        def __init__(self):
+            self.offered = []  # operations offered per decision, in order
+            self.scroll_seen = []  # page scroll payload per decision
+
+        def validate(self):
+            return None
+
+        def choose(self, state, goal, history):
+            body, operations, _targets, _controls = build_choose_request(state, goal, history)
+            self.offered.append(set(operations))
+            self.scroll_seen.append(dict(body["state"]["page"]["scroll"]))
+            if "Deep done" in state["text"]:
+                return stub("DONE", None, "DONE")
+            for a in state["actions"]:
+                if a["kind"] == "click" and a["label"] == "Deep target":
+                    return stub(a["id"], a.get("node"), "CLICK")
+            if "SCROLL_DOWN" in operations:
+                return stub("scroll_down", None, "SCROLL_DOWN")
+            return stub("BLOCKED", None, "BLOCKED")
+
+    decider = ScrollUntilVisible()
+    url = "data:text/html," + quote(TALL_HTML)
+    browser = CdpBrowser(url)
+    with Agent(
+        url, "Click the Deep target button", browser=browser, decider=decider, text_provider=MappingTextProvider({})
+    ) as agent:
+        list(agent.run())
+        assert agent.state["status"] == "done"
+        assert browser.evaluate("window.__clicks") == ["deep"]
+        scrolls = [h for h in agent.state["history"] if h["kind"] == "scroll"]
+        assert len(scrolls) >= 3  # several viewports down, not one
+        # Recorded positions advance monotonically (real viewport movement).
+        assert all(h["scroll_after"]["y"] > h["scroll_before"]["y"] for h in scrolls)
+        assert all(b["scroll_before"]["y"] >= a["scroll_after"]["y"] for a, b in zip(scrolls, scrolls[1:]))
+    # First decision (no history): BLOCKED was available. Mid-page
+    # decisions right after a scroll that advanced, with scroll_down
+    # still offered: BLOCKED was suppressed (the landing that reveals
+    # the target may sit at the page boundary, where it returns --
+    # that case is pinned offline in tests/test_regressions.py).
+    assert "BLOCKED" in decider.offered[0]
+    assert all("BLOCKED" not in ops for ops in decider.offered[1:3])
+    assert decider.scroll_seen[1]["y"] > 0 and decider.scroll_seen[1]["can_scroll_down"] is True
+    assert decider.scroll_seen[1]["can_scroll_up"] is True

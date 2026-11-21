@@ -70,6 +70,14 @@ def fake_cdp(monkeypatch):
     monkeypatch.setattr(browser, "_cdp", fake)
     monkeypatch.setattr(browser, "_ensure_daemon", ensure_daemon)
     fake.ensure_daemon = ensure_daemon
+    # The #16 attach guard: construction needs a pinned endpoint (or the
+    # real-browser opt-in) and a daemon that reports a dedicated kind.
+    # Default the fake world to the pinned, dedicated case; the guard
+    # tests below override per case.
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
+    monkeypatch.delenv("ACCOUNT_VAULT_ALLOW_REAL_BROWSER", raising=False)
+    fake.browser_kind = Mock(name="daemon_browser_kind", return_value="cdp")
+    monkeypatch.setattr(browser, "_daemon_browser_kind", fake.browser_kind)
     return fake
 
 
@@ -115,9 +123,12 @@ def test_init_creates_target_configures_and_waits_for_ready(fake_cdp):
     assert opening[2][1]["session_id"] == "S1"
     assert opening[3] == (
         "Emulation.setFocusEmulationEnabled",
-        {"session_id": "S1", "enabled": True},
+        {"session_id": "S1", "_response_timeout": 30, "enabled": True},
     )
-    assert opening[4] == ("Page.navigate", {"session_id": "S1", "url": "https://example.test/page"})
+    assert opening[4] == (
+        "Page.navigate",
+        {"session_id": "S1", "_response_timeout": 30, "url": "https://example.test/page"},
+    )
     # Polled readyState until complete: 3 evaluations.
     assert [p["expression"] for p in fake_cdp.evaluate_params()] == ["document.readyState"] * 3
 
@@ -134,9 +145,85 @@ def test_init_gives_up_waiting_after_the_deadline(fake_cdp, monkeypatch):
     assert fake_cdp.evaluate_params() == []  # never even polled
 
 
+# --- attach guard (upstream issue #16a): never the everyday browser -------
+# Unpinned, browser-harness discovers the daily Chrome from its profile
+# dirs (or probes 9222/9223, or launches it). Construction must refuse
+# that default before any daemon work, accept a pinned dedicated
+# endpoint, and still catch the stale-daemon case where ensure_daemon()
+# reuses a daemon that attached locally before the pin was set (#230).
+
+
+def _unpin(monkeypatch):
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+
+
+def test_init_refuses_unpinned_attach_before_any_daemon_work(fake_cdp, monkeypatch):
+    _unpin(monkeypatch)
+    with pytest.raises(RuntimeError, match="Refusing to attach"):
+        CdpBrowser("https://example.test/")
+    fake_cdp.ensure_daemon.assert_not_called()  # nothing spawned, launched or attached
+    assert fake_cdp.calls == []
+
+
+def test_init_refusal_names_the_dedicated_recipe_and_the_opt_in(fake_cdp, monkeypatch):
+    _unpin(monkeypatch)
+    with pytest.raises(RuntimeError) as caught:
+        CdpBrowser("https://example.test/")
+    message = str(caught.value)
+    assert "BU_CDP_URL=http://127.0.0.1:9333" in message
+    assert "--user-data-dir=" in message
+    assert "ACCOUNT_VAULT_ALLOW_REAL_BROWSER=1" in message
+
+
+def test_init_pinned_endpoint_constructs_and_records_kind(fake_cdp):
+    fake_cdp.script = ["complete"]
+    instance = CdpBrowser("https://example.test/")
+    assert instance.browser_kind == "cdp"
+    fake_cdp.ensure_daemon.assert_called_once_with()
+    fake_cdp.browser_kind.assert_called_once_with()
+
+
+def test_init_rejects_a_stale_local_daemon_despite_the_pin(fake_cdp, monkeypatch):
+    # The pin is set, but a daemon under BU_NAME already attached to the
+    # everyday Chrome and ensure_daemon() reused it: driving on would
+    # drive the real profile while believing it is dedicated.
+    fake_cdp.browser_kind.return_value = "local"
+    with pytest.raises(RuntimeError, match="attached to a local"):
+        CdpBrowser("https://example.test/")
+    assert "Target.createTarget" not in fake_cdp.methods()  # refused before opening any tab
+
+
+def test_init_fails_closed_when_daemon_kind_is_unverifiable(fake_cdp):
+    fake_cdp.browser_kind.return_value = None  # older daemon, no kind report
+    with pytest.raises(RuntimeError, match="cannot be verified"):
+        CdpBrowser("https://example.test/")
+    assert "Target.createTarget" not in fake_cdp.methods()
+
+
+def test_init_real_browser_opt_in_warns_and_attaches(fake_cdp, monkeypatch):
+    _unpin(monkeypatch)
+    monkeypatch.setenv("ACCOUNT_VAULT_ALLOW_REAL_BROWSER", "1")
+    fake_cdp.browser_kind.return_value = "local"
+    fake_cdp.script = ["complete"]
+    with pytest.warns(UserWarning, match="everyday Chrome profile"):
+        instance = CdpBrowser("https://example.test/")
+    assert instance.browser_kind == "local"
+    fake_cdp.ensure_daemon.assert_called_once_with()
+
+
+def test_init_opt_in_warns_when_a_stale_daemon_ignores_the_pin(fake_cdp, monkeypatch):
+    monkeypatch.setenv("ACCOUNT_VAULT_ALLOW_REAL_BROWSER", "true")
+    fake_cdp.browser_kind.return_value = "local"  # pin set, daemon still local
+    fake_cdp.script = ["complete"]
+    with pytest.warns(UserWarning, match="pin did not take effect"):
+        instance = CdpBrowser("https://example.test/")
+    assert instance.browser_kind == "local"
+
+
 def test_call_scopes_every_method_to_the_session(fake_cdp):
     bare_browser().call("Page.reload", ignoreCache=True)
-    assert fake_cdp.calls == [("Page.reload", {"session_id": "S1", "ignoreCache": True})]
+    assert fake_cdp.calls == [("Page.reload", {"session_id": "S1", "_response_timeout": 30, "ignoreCache": True})]
 
 
 def test_evaluate_returns_value_and_maps_exceptions_to_stale(fake_cdp):
@@ -171,7 +258,8 @@ def test_observe_retries_stale_reads_then_succeeds(monkeypatch):
     assert result["marker"] == "M1"
     assert operation.call_count == 3
     request = operation.call_args.args[0]
-    assert request == {"operation": "observe", "session": "S1", "screenshot": False}
+    # No screenshot requested, so no tab activation either (#43/#16).
+    assert request == {"operation": "observe", "session": "S1", "screenshot": False, "activate": False}
 
 
 def test_observe_raises_after_ten_stale_reads(monkeypatch):
@@ -221,6 +309,104 @@ def test_observe_of_a_navigating_document_is_stale(fake_cdp):
     fake_cdp.script = [None]  # snapshot.js returns null mid-navigation
     with pytest.raises(StalePage, match="Document is navigating"):
         browser_operation({"operation": "observe", "session": "S1", "screenshot": False})
+
+
+# --- CDP deadlines + screenshot degradation (#14, PRs #97/#19/#43) ----------
+# browser-harness defaults every IPC call to 5s. Slow navigations and
+# evaluations legitimately exceed that, while a screenshot on a throttled
+# background tab can stall indefinitely -- and used to take the whole
+# (already-completed) structured observation down with it. Deadlines are
+# explicit now (30s session-wide, 5s for the optional capture, the shape
+# from branch codex/bu-bench-eval-v2 a2676ee/6cf62ca), capture failure by
+# timeout degrades to screenshot=None, and no timeout is ever retried.
+
+
+class TimingOutCapture(FakeCdp):
+    """FakeCdp whose capture raises the way the harness IPC layer does."""
+
+    def __call__(self, method, **params):
+        if method == "Page.captureScreenshot":
+            self.calls.append((method, params))
+            raise TimeoutError("Page.captureScreenshot timed out after 5s waiting for the daemon")
+        return super().__call__(method, **params)
+
+
+@pytest.fixture
+def timing_out_cdp(fake_cdp, monkeypatch):
+    fake = TimingOutCapture()
+    fake.ensure_daemon = fake_cdp.ensure_daemon
+    fake.browser_kind = fake_cdp.browser_kind
+    monkeypatch.setattr(browser, "_cdp", fake)
+    return fake
+
+
+def test_screenshot_timeout_preserves_the_structured_observation(timing_out_cdp):
+    result = browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
+    assert result["marker"] == "M1" and result["actions"] == INFO["actions"]
+    assert result["screenshot"] is None  # explicit: requested but unavailable
+    capture = next(p for m, p in timing_out_cdp.calls if m == "Page.captureScreenshot")
+    assert capture["_response_timeout"] == 5  # the optional capture keeps its short deadline
+
+
+def test_screenshot_failure_other_than_timeout_still_propagates(fake_cdp, monkeypatch):
+    original = fake_cdp.__call__
+
+    def broken(method, **params):
+        if method == "Page.captureScreenshot":
+            raise RuntimeError("daemon exploded")
+        return original(method, **params)
+
+    monkeypatch.setattr(browser, "_cdp", broken)
+    with pytest.raises(RuntimeError, match="daemon exploded"):
+        browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
+
+
+def test_session_calls_carry_the_thirty_second_deadline(fake_cdp):
+    fake_cdp.script = ["complete"]
+    CdpBrowser("https://example.test/")  # navigate + evaluates go through call()
+    browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
+    deadlines = {m: p["_response_timeout"] for m, p in fake_cdp.calls if "session_id" in p}
+    assert deadlines["Page.navigate"] == 30
+    assert deadlines["Runtime.evaluate"] == 30
+    assert deadlines["Page.captureScreenshot"] == 5
+
+
+def test_timed_out_mutation_is_never_retried(fake_cdp, monkeypatch):
+    # A deadline is not a retry hint: the input may already have landed.
+    navigations = Mock(side_effect=TimeoutError("Page.navigate timed out after 30s waiting for the daemon"))
+    monkeypatch.setattr(browser, "_cdp", navigations)
+    with pytest.raises(TimeoutError, match="timed out"):
+        bare_browser().call("Page.navigate", url="https://example.test/")
+    navigations.assert_called_once_with(
+        "Page.navigate", session_id="S1", _response_timeout=30, url="https://example.test/"
+    )
+
+
+def test_capture_activates_the_tab_only_when_asked(fake_cdp):
+    browser_operation({"operation": "observe", "session": "S1", "screenshot": True, "activate": True})
+    assert fake_cdp.methods().index("Page.bringToFront") < fake_cdp.methods().index("Page.captureScreenshot")
+
+    fake_cdp.calls.clear()
+    browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
+    assert "Page.bringToFront" not in fake_cdp.methods()
+
+
+def test_observe_requests_activation_only_on_a_dedicated_kind(monkeypatch):
+    operation = Mock(return_value=dict(INFO))
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    instance = bare_browser()
+
+    instance.browser_kind = "cdp"
+    instance.observe(screenshot=True)
+    assert operation.call_args.args[0]["activate"] is True
+
+    instance.browser_kind = "local"  # opted-in everyday Chrome: never steal focus
+    instance.observe(screenshot=True)
+    assert operation.call_args.args[0]["activate"] is False
+
+    instance.browser_kind = "cdp"
+    instance.observe(screenshot=False)  # nothing to capture, nothing to activate
+    assert operation.call_args.args[0]["activate"] is False
 
 
 # --- fresh(): per-node guards for click/select, marker otherwise ------------
@@ -312,7 +498,15 @@ def test_scroll_dispatches_a_mouse_wheel_and_nothing_else(fake_cdp):
     assert fake_cdp.calls == [
         (
             "Input.dispatchMouseEvent",
-            {"session_id": "S1", "type": "mouseWheel", "x": 550, "y": 650, "deltaX": 0, "deltaY": 600},
+            {
+                "session_id": "S1",
+                "_response_timeout": 30,
+                "type": "mouseWheel",
+                "x": 550,
+                "y": 650,
+                "deltaX": 0,
+                "deltaY": 600,
+            },
         )
     ]
 
@@ -350,9 +544,63 @@ def test_fill_clicks_selects_all_and_inserts_text(fake_cdp):
     assert keys[0]["commands"] == ["selectAll"] and keys[0]["modifiers"] == modifiers
     assert keys[0]["key"] == "a" and keys[0]["code"] == "KeyA"
     inserts = [p for m, p in fake_cdp.calls if m == "Input.insertText"]
-    assert inserts == [{"session_id": "S1", "text": "Zurich"}]
+    assert inserts == [{"session_id": "S1", "_response_timeout": 30, "text": "Zurich"}]
     # Mouse click into the field precedes the keyboard work.
     assert fake_cdp.methods().index("Input.dispatchMouseEvent") < fake_cdp.methods().index("Input.insertText")
+
+
+# --- native date/time/color/range fill (upstream issue #227, fill half) ---
+# Enumeration landed earlier, but every fill went through Input.insertText,
+# which cannot commit a native segmented control: the live repro filled a
+# date field and submitted it empty with zero input/change events. These
+# pin the Python half against the fake transport; the JS half (native
+# setter, rejection restore) runs for real in tests/test_live_cdp.py.
+
+
+def test_native_fill_commits_inside_the_evaluate_without_typing(fake_cdp):
+    fake_cdp.script = [{"x": 1.0, "y": 2.0, "filled": True, "value": "2027-03-01"}]
+    action = {"kind": "fill", "node": 5, "input_type": "date", "id": "a16"}
+    assert browser_operation(act_request(action, text="2027-03-01")) == {"executed": "a16"}
+    # The value was committed in-page: no click, no select-all, no insertText.
+    assert fake_cdp.methods() == ["Runtime.evaluate"]
+    expression = fake_cdp.evaluate_params()[0]["expression"]
+    # The fill text rides in the payload; the resolver commits it through
+    # the native setter for exactly the native types.
+    assert '"text": "2027-03-01"' in expression
+    assert "HTMLInputElement.prototype" in expression
+    for input_type in ("date", "datetime-local", "time", "month", "week", "color", "range"):
+        assert f"'{input_type}'" in expression
+    # The mutation stays after the covered check, like the SELECT mutation:
+    # nothing may be committed before hittability is proven (#245).
+    assert expression.index("cache.covered") < expression.index("filled:true")
+
+
+def test_native_fill_rejection_is_loud_runtime_not_stale(fake_cdp):
+    # A rejected value leaves the field untouched (the JS restores it), so
+    # it must surface like the select path -- RuntimeError naming the bad
+    # value -- never as StalePage, which the tick would retry verbatim.
+    fake_cdp.script = [{"rejected": "not a valid date value: March 1, 2027"}]
+    action = {"kind": "fill", "node": 5, "input_type": "date", "id": "a17"}
+    with pytest.raises(RuntimeError, match="Native input fill rejected: not a valid date value"):
+        browser_operation(act_request(action, text="March 1, 2027"))
+    assert fake_cdp.methods() == ["Runtime.evaluate"]  # refused before any Input.* dispatch
+
+
+def test_evaluation_failure_during_native_fill_is_not_reported_as_stale(fake_cdp):
+    # The setter may already have committed when evaluation dies; like a
+    # select, that is inspect-before-retrying, not a safe-to-re-observe
+    # stale page. A plain text fill mutates only via Input.* afterwards,
+    # so it keeps the stale verdict.
+    failure = {"__response__": {"exceptionDetails": {"text": "destroyed"}}}
+    fake_cdp.script = [dict(failure)]
+    native = {"kind": "fill", "node": 3, "input_type": "time", "id": "a18"}
+    with pytest.raises(RuntimeError, match="Native input execution was interrupted"):
+        browser_operation(act_request(native, text="09:30"))
+
+    fake_cdp.script = [dict(failure)]
+    plain = {"kind": "fill", "node": 3, "input_type": "text", "id": "a19"}
+    with pytest.raises(StalePage):
+        browser_operation(act_request(plain, text="Zurich"))
 
 
 def test_select_acts_inside_the_evaluate_without_mouse_input(fake_cdp):
