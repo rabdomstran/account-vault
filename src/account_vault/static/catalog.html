@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Forma · Find a place to slow down (static catalog)</title>
+    <!-- Static-rendered twin of fixture.html for the offline backend:
+         same places/filters/articles, but post-JS DOM written out as
+         plain HTML (StaticBrowser executes no JavaScript). Deliberately
+         messier than examples/hotel_search.html: same-labeled fields in
+         different groups, duplicate select values, near-duplicate stay
+         names, disabled/hidden/aria-hidden traps, and cross-file nav. -->
+  </head>
+  <body>
+    <header>
+      <a href="#" class="logo">forma.</a>
+      <nav>
+        <a href="catalog.html">All stays</a>
+        <a href="catalog_design.html">Design stays</a>
+        <a href="#reading">Reading room</a>
+      </nav>
+      <span>PLACES WITH CHARACTER</span>
+    </header>
+
+    <div aria-hidden="true" class="promo-popup">
+      <p>Members save more</p>
+      <button type="button">Claim 50% off</button>
+    </div>
+    <button type="button" style="display:none">Secret deal</button>
+
+    <main>
+      <h1>Somewhere you can exhale.</h1>
+      <p>Small, considered places. A little closer to what matters.</p>
+
+      <form id="search" action="#results-note" method="get">
+        <div>
+          <label for="destination">Destination</label>
+          <input id="destination" name="destination" type="search"
+                 aria-label="Destination" placeholder="Where would you like to go?" value="" />
+          <div onclick="pickSuggestion()">Lisbon, Portugal</div>
+        </div>
+        <div>
+          <label for="arrive">Arrive</label>
+          <input id="arrive" name="arrive" type="date" value="" />
+        </div>
+        <button type="submit" data-reveals="results-note">Find stays</button>
+        <section id="results-note" data-results hidden
+                 data-template="Stays near {destination} from {arrive} are listed below.">
+          <h2>Search applied</h2>
+        </section>
+      </form>
+
+      <fieldset>
+        <legend>Filters</legend>
+        <label>Category
+          <select id="category" name="category" aria-label="Stay category">
+            <option value="all" selected>All stays</option>
+            <option value="Design">Design</option>
+            <option value="Nature">Nature</option>
+            <option value="Coastal" disabled>Coastal (sold out)</option>
+          </select>
+        </label>
+        <label>Sort
+          <select id="sort" name="sort" aria-label="Sort by">
+            <option value="featured" selected>Featured</option>
+            <option value="price">Price: low to high</option>
+            <option value="price">Price: low to high (member)</option>
+          </select>
+        </label>
+        <label>
+          <input id="free-main" name="cancellation" type="checkbox" />
+          Free cancellation <span>(recommended)</span>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Refine results</legend>
+        <label>
+          <input id="free-side" name="cancellation_side" type="checkbox" />
+          Free cancellation
+        </label>
+        <label>Max price
+          <input id="max-price" name="max_price" type="range" min="50" max="500" />
+        </label>
+        <span id="gift-label">Gift note</span>
+        <div id="gift-note" contenteditable aria-labelledby="gift-label"></div>
+      </fieldset>
+
+      <p id="count">6 places</p>
+      <div class="grid" id="results">
+        <article class="card">
+          <div>LISBON · DESIGN</div><h2>Casa Flora</h2>
+          <div>Free cancellation · 2 guests</div><div>€145 / night</div>
+          <button type="button" aria-label="View Casa Flora" data-reveals="detail-casa-flora">View stay ↗</button>
+        </article>
+        <article class="card">
+          <div>LISBON · DESIGN</div><h2>Casa Verde</h2>
+          <div>Non-refundable · 2 guests</div><div>€98 / night</div>
+          <button type="button" aria-label="View Casa Verde" data-reveals="detail-casa-verde">View stay ↗</button>
+        </article>
+        <article class="card">
+          <div>COPENHAGEN · DESIGN</div><h2>The Glasshouse</h2>
+          <div>Free cancellation · 2 guests</div><div>€210 / night</div>
+          <button type="button" aria-label="View The Glasshouse" data-reveals="detail-glasshouse">View stay ↗</button>
+        </article>
+        <article class="card">
+          <div>LISBON · NATURE</div><h2>Serra Lodge</h2>
+          <div>Non-refundable · 2 guests</div><div>€120 / night</div>
+          <button type="button" aria-label="View Serra Lodge" data-reveals="detail-serra">View stay ↗</button>
+        </article>
+        <article class="card">
+          <div>LISBON · DESIGN</div><h2>Atelier Nine</h2>
+          <div>Free cancellation · 3 guests</div><div>€160 / night</div>
+          <button type="button" aria-label="View Atelier Nine" disabled>Sold out</button>
+        </article>
+        <article class="card">
+          <div>PORTO · COASTAL</div><h2>Dune House</h2>
+          <div>Free cancellation · 4 guests</div><div>€175 / night</div>
+          <button type="button" aria-label="View Dune House" data-reveals="detail-dune">View stay ↗</button>
+        </article>
+      </div>
+
+      <section id="detail-casa-flora" data-results hidden>
+        <h2>Casa Flora</h2>
+        <p>A quiet courtyard, warm terracotta, and light that stays all afternoon.</p>
+        <p>€145 / night · 2 guests</p>
+        <p>Free cancellation included</p>
+      </section>
+      <section id="detail-casa-verde" data-results hidden>
+        <h2>Casa Verde</h2><p>€98 / night · 2 guests</p><p>Non-refundable stay</p>
+      </section>
+      <section id="detail-glasshouse" data-results hidden>
+        <h2>The Glasshouse</h2><p>€210 / night · 2 guests</p><p>Free cancellation included</p>
+      </section>
+      <section id="detail-serra" data-results hidden>
+        <h2>Serra Lodge</h2><p>€120 / night · 2 guests</p><p>Non-refundable stay</p>
+      </section>
+      <section id="detail-dune" data-results hidden>
+        <h2>Dune House</h2><p>€175 / night · 4 guests</p><p>Free cancellation included</p>
+      </section>
+
+      <section id="reading">
+        <h2>Ideas worth opening.</h2>
+        <article>
+          <div>AGENTS · 6 MIN</div>
+          <button type="button" data-reveals="article-choices">A browser is a choice, not a conversation</button>
+          <p>How finite action sets turn visible elements into a fast browser control loop.</p>
+        </article>
+        <article>
+          <div>SYSTEMS · 4 MIN</div>
+          <button type="button" data-reveals="article-latency">Where the milliseconds go</button>
+          <p>Measuring network latency, model decisions, and page settling separately.</p>
+        </article>
+        <section id="article-choices" data-results hidden>
+          <h3>A browser is a choice, not a conversation</h3>
+          <p>Links, buttons, checkboxes, and dropdown values already form a finite vocabulary. Text fields need a separate value generator.</p>
+        </section>
+        <section id="article-latency" data-results hidden>
+          <h3>Where the milliseconds go</h3>
+          <p>Measure the complete loop against an observable result.</p>
+        </section>
+      </section>
+
+      <footer>
+        <p>Thoughtful places, independent hosts. Local demo: no bookings or payments. Every stay is visited by a Forma editor before it is listed; prices include cleaning and city tax where shown.</p>
+        <form action="#newsletter" method="post">
+          <label>Newsletter email <input type="email" name="newsletter" /></label>
+          <label>Admin PIN <input type="password" name="pin" /></label>
+          <input type="hidden" name="tracker" value="spring-campaign" />
+        </form>
+      </footer>
+    </main>
+  </body>
+</html>

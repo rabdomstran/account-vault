@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Forma · Find a place to slow down</title>
+  </head>
+  <body>
+    <header>
+      <span class="logo">Forma</span>
+      <nav>
+        <a href="#stays">Stays</a>
+        <a href="#about">About</a>
+      </nav>
+    </header>
+    <main>
+      <h1>Find a place to slow down</h1>
+      <p>Small hotels, honest prices, no resort fees.</p>
+
+      <!-- The form deliberately exercises the upstream coverage bugs this
+           port fixes: a native date input (#215/#227), a bare
+           contenteditable notes field (#218), and duplicate-valued select
+           options where value-based execution picks the wrong row (#216). -->
+      <form id="search" action="#results" method="get">
+        <div>
+          <label for="destination">Destination</label>
+          <input id="destination" name="destination" type="search"
+                 placeholder="Where to?" value="" />
+        </div>
+        <div>
+          <label for="checkin">Check-in</label>
+          <input id="checkin" name="checkin" type="date" value="" />
+        </div>
+        <div>
+          <label for="guests">Guests</label>
+          <select id="guests" name="guests">
+            <option value="1" selected>1 guest</option>
+            <option value="1">1 guest (promo)</option>
+            <option value="2">2 guests</option>
+            <option value="3">3 guests</option>
+          </select>
+        </div>
+        <div>
+          <label>
+            <input id="free-cancel" name="free_cancel" type="checkbox" />
+            Free cancellation
+          </label>
+        </div>
+        <div>
+          <span id="notes-label">Notes for the host</span>
+          <div id="notes" contenteditable aria-labelledby="notes-label"></div>
+        </div>
+        <button type="submit" data-reveals="results">Search</button>
+
+        <section id="results" data-results hidden
+                 data-template="3 stays near {destination} from {checkin} for {guests} guest(s).">
+          <h2>Results</h2>
+        </section>
+      </form>
+    </main>
+  </body>
+</html>
