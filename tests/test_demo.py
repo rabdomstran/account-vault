@@ -7,10 +7,18 @@ make_server) is bypassed; routing, Host/token/Origin checks, locking,
 command dispatch and the full offline agent loop all run for real.
 Live mode shares every path except Agent construction (mocked, as
 upstream); the CDP construction is exercised by tests/test_live_cdp.py.
+
+The transport gets its own end-to-end coverage in
+test_inspector_serves_over_a_real_socket (marked `socket`): it binds
+an ephemeral loopback port and speaks real HTTP, so it runs in CI and
+on a normal dev machine, and skips with an explicit reason only where
+the sandbox refuses the bind.
 """
 
+import http.client
 import io
 import json
+import threading
 from email.message import Message
 
 import pytest
@@ -89,6 +97,51 @@ def test_offline_reset_and_ticks_drive_the_loop_to_done():
             break
     assert state["status"] == "done"
     assert "Free cancellation included" in state["page"]["text"]
+
+
+@pytest.mark.socket
+def test_inspector_serves_over_a_real_socket():
+    """Real TCP transport: make_server + ThreadingHTTPServer + HTTP.
+
+    This is the one path the in-process tests above bypass. It binds an
+    ephemeral loopback port, so it runs wherever listening sockets are
+    allowed (CI, dev machines) and skips — with the reason visible via
+    `pytest -rs` — only under sandboxes that forbid the bind.
+    """
+    original_port = demo.PORT
+    try:
+        server = demo.make_server(0)
+    except PermissionError as error:
+        pytest.skip(f"listening sockets not permitted in this environment: {error}")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", demo.PORT, timeout=5)
+        connection.request("GET", "/")
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        assert response.status == 200
+        assert "__TOKEN__" not in body and demo.TOKEN in body
+
+        connection.request("GET", "/api/state")
+        response = connection.getresponse()
+        state = json.loads(response.read())
+        assert response.status == 200
+        assert state["max_steps"] == 60
+
+        # Untokened POSTs are refused over the wire too.
+        payload = json.dumps({"scenario": "travel", "mode": "offline", "goal": "x"})
+        connection.request("POST", "/api/reset", body=payload,
+                           headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 403
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        demo.PORT = original_port
 
 
 def test_offline_flights_is_rejected_and_state_endpoint_reports_budget():

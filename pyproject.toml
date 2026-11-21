@@ -61,3 +61,6 @@ select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "socket: binds a real loopback listening socket (skips where a sandbox forbids it)",
+]

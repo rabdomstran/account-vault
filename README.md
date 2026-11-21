@@ -1,5 +1,7 @@
 # account-vault
 
+[![CI](https://github.com/rabdomstran/account-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/rabdomstran/account-vault/actions/workflows/ci.yml)
+
 Ultrafast System-One browsing agent with a local-first encrypted account store.
 
 The agent runs a tight **perceive → decide → act** loop where each step costs
@@ -20,7 +22,7 @@ runs end to end against a static HTML file today:
 ```bash
 uv run python -m account_vault   # offline demo on examples/hotel_search.html
 uv run account-vault-demo        # inspector UI on http://127.0.0.1:8766 (offline mode default)
-uv run pytest                    # 64 tests, no API keys (2 live-CDP tests are opt-in)
+uv run pytest                    # 63 tests, no API keys (2 live-CDP tests are opt-in)
 ACCOUNT_VAULT_LIVE=1 uv run pytest tests/test_live_cdp.py  # real Chrome, dedicated profile
 ```
 

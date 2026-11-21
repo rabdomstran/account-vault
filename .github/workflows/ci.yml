@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ruff + pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of requires-python = ">=3.12,<3.14" in pyproject.toml.
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # setup-uv persists uv's cache itself: the cache key is computed
+      # from hashes of the files matching cache-dependency-glob, so no
+      # hand-rolled actions/cache key is needed. cache-suffix keeps the
+      # two matrix jobs from racing to save under the same key.
+      # See https://docs.astral.sh/uv/guides/integration/github/#caching
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.12.1"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: ${{ matrix.python-version }}
+
+      # --locked: fail if uv.lock is out of date with pyproject.toml.
+      # No --all-extras: the `local`/`perception` extras pull torch and
+      # cactus-compute, which neither the suite nor ruff needs.
+      - name: Install dependencies
+        run: uv sync --locked --dev
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      # -rs: print skip reasons so it is visible in the log that the
+      # only skipped tests are the opt-in live-CDP pair.
+      - name: Test
+        run: uv run pytest -rs
