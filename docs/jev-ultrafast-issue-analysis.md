@@ -1,15 +1,15 @@
 # jev-ultrafast open-issue analysis — failure modes vs this port
 
-- **Generated:** 2026-11-21 19:33 UTC by `scripts/analyse_jev_issues.py` (live `gh` fetch).
+- **Generated:** 2026-11-21 19:56 UTC by `scripts/analyse_jev_issues.py` (live `gh` fetch).
 - **Corpus:** 57 open issues in [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (45 comments, 65 distinct people). PRs are out of scope.
 - **Cross-referenced against:** `docs/jev-ultrafast-port.md`, `docs/jev-ultrafast-drift-review.md`, plus `DEVIATION` comments and regression tests in `src/` / `tests/` (code outranks docs).
 - **Reproduce:** `uv run python scripts/analyse_jev_issues.py` (needs authenticated `gh`).
 
 ## TL;DR
 
-- **26 handled, 4 partial, 10 open, 17 ignore/noise, 0 unclassified** out of 57.
-- Highest-ranked remaining work is [#23](https://github.com/browser-use/jev-ultrafast/issues/23) (perceive-enumeration, hit score 33): Element table misses clickable non-native elements, so suggestion rows are unreachable.
-- **Docs lag the code on 2 issue(s)** (#14, #227): fixed in code since the drift review / port notes were written — update the docs, not the code (see §5).
+- **27 handled, 3 partial, 10 open, 17 ignore/noise, 0 unclassified** out of 57.
+- Highest-ranked remaining work is [#67](https://github.com/browser-use/jev-ultrafast/issues/67) (decide-accuracy, hit score 31): Jev ultra fast Can't complete simple task.
+- **Docs lag the code on 3 issue(s)** (#14, #23, #227): fixed in code since the drift review / port notes were written — update the docs, not the code (see §5).
 - The hit score is an **engagement proxy** (comments, people, reactions, cross-references), not usage telemetry — the tracker has none. Formula in §7.
 
 ## 1. Work queue (ranked — start here)
@@ -18,20 +18,19 @@ Open + partial + unclassified, most-hit first. Noise and handled issues are excl
 
 | Rank | Issue | Cluster | Status | Hit | Comments | Next action |
 |---|---|---|---|---|---|---|
-| 1 | [#23](https://github.com/browser-use/jev-ultrafast/issues/23) Element table misses clickable non-native eleme… | perceive-enumeration | partial | 33 | 2 | Close the residual: [onclick] rows handled; non-onclick clickable rows remain (drift P1.9) |
-| 2 | [#67](https://github.com/browser-use/jev-ultrafast/issues/67) Jev ultra fast Can't complete simple task | decide-accuracy | open | 31 | 8 | Reproduce on the baseline suite; classify misses as menu vs pick before changing prompts |
-| 3 | [#125](https://github.com/browser-use/jev-ultrafast/issues/125) Feature Request: Support local resident decisio… | wire-providers | partial | 20 | 4 | Close the residual: local backend landed; no MCP stdio server |
-| 4 | [#51](https://github.com/browser-use/jev-ultrafast/issues/51) Windows: owned tab is backgrounded, modal menus… | browser-cdp | open | 19 | 2 | Add Page.bringToFront on the Windows path; needs a Windows live verifier before calling it fixed |
-| 5 | [#16](https://github.com/browser-use/jev-ultrafast/issues/16) Setup friction: SOCKS proxy crash on startup; b… | browser-cdp | partial | 12 | 0 | Close the residual: attach default fixed in code; SOCKS first-call crash remains (httpx lacks the socks extra) |
-| 6 | [#149](https://github.com/browser-use/jev-ultrafast/issues/149) Could the visible page state preserve more sema… | perception-fidelity | open | 11 | 1 | Prototype structured visible text behind the baseline; keep the 6,000-char budget explicit |
-| 7 | [#223](https://github.com/browser-use/jev-ultrafast/issues/223) Add opt-in keep_open mode to preserve and foreg… | loop-control | open | 11 | 1 | Add opt-in keep_open (small, offline-testable); default stays close |
-| 8 | [#25](https://github.com/browser-use/jev-ultrafast/issues/25) [Feature Request]: Decouple Jev inference provi… | wire-providers | partial | 8 | 1 | Close the residual: decider object + base URL landed; wire shape still /v1/systemone |
-| 9 | [#187](https://github.com/browser-use/jev-ultrafast/issues/187) Idea: Multi-Stage Agent Architecture for Improv… | decide-accuracy | open | 6 | 0 | Evaluate only via the planner-branch diff (drift P1.5); do not design from the issue alone |
-| 10 | [#248](https://github.com/browser-use/jev-ultrafast/issues/248) Community benchmark: how accurate is the decisi… | decide-accuracy | open | 6 | 0 | Run the metered real-model baseline (Jev vs d1-2B); score steps and run completion separately |
-| 11 | [#129](https://github.com/browser-use/jev-ultrafast/issues/129) MDN wrong-waypoint actions | decide-accuracy | open | 3 | 0 | Add the MDN task to the baseline suite as a pinned wrong-waypoint repro |
-| 12 | [#159](https://github.com/browser-use/jev-ultrafast/issues/159) Demo UX: a first-time user cannot tell why noth… | demo-docs-ux | open | 3 | 0 | Demo preflight: surface missing keys/backends before the first tick |
-| 13 | [#224](https://github.com/browser-use/jev-ultrafast/issues/224) Choose next 会报错Model provider returned HTTP 451… | wire-providers | open | 3 | 0 | Name the region block in the hosted-path error text; point at the local backend |
-| 14 | [#225](https://github.com/browser-use/jev-ultrafast/issues/225) When I click "Choose next", I get an error: Mod… | wire-providers | open | 3 | 0 | Same fix as #224 (duplicate report) -- one error-text change covers both |
+| 1 | [#67](https://github.com/browser-use/jev-ultrafast/issues/67) Jev ultra fast Can't complete simple task | decide-accuracy | open | 31 | 8 | Reproduce on the baseline suite; classify misses as menu vs pick before changing prompts |
+| 2 | [#125](https://github.com/browser-use/jev-ultrafast/issues/125) Feature Request: Support local resident decisio… | wire-providers | partial | 20 | 4 | Close the residual: local backend landed; no MCP stdio server |
+| 3 | [#51](https://github.com/browser-use/jev-ultrafast/issues/51) Windows: owned tab is backgrounded, modal menus… | browser-cdp | open | 19 | 2 | Add Page.bringToFront on the Windows path; needs a Windows live verifier before calling it fixed |
+| 4 | [#16](https://github.com/browser-use/jev-ultrafast/issues/16) Setup friction: SOCKS proxy crash on startup; b… | browser-cdp | partial | 12 | 0 | Close the residual: attach default fixed in code; SOCKS first-call crash remains (httpx lacks the socks extra) |
+| 5 | [#149](https://github.com/browser-use/jev-ultrafast/issues/149) Could the visible page state preserve more sema… | perception-fidelity | open | 11 | 1 | Prototype structured visible text behind the baseline; keep the 6,000-char budget explicit |
+| 6 | [#223](https://github.com/browser-use/jev-ultrafast/issues/223) Add opt-in keep_open mode to preserve and foreg… | loop-control | open | 11 | 1 | Add opt-in keep_open (small, offline-testable); default stays close |
+| 7 | [#25](https://github.com/browser-use/jev-ultrafast/issues/25) [Feature Request]: Decouple Jev inference provi… | wire-providers | partial | 8 | 1 | Close the residual: decider object + base URL landed; wire shape still /v1/systemone |
+| 8 | [#187](https://github.com/browser-use/jev-ultrafast/issues/187) Idea: Multi-Stage Agent Architecture for Improv… | decide-accuracy | open | 6 | 0 | Evaluate only via the planner-branch diff (drift P1.5); do not design from the issue alone |
+| 9 | [#248](https://github.com/browser-use/jev-ultrafast/issues/248) Community benchmark: how accurate is the decisi… | decide-accuracy | open | 6 | 0 | Run the metered real-model baseline (Jev vs d1-2B); score steps and run completion separately |
+| 10 | [#129](https://github.com/browser-use/jev-ultrafast/issues/129) MDN wrong-waypoint actions | decide-accuracy | open | 3 | 0 | Add the MDN task to the baseline suite as a pinned wrong-waypoint repro |
+| 11 | [#159](https://github.com/browser-use/jev-ultrafast/issues/159) Demo UX: a first-time user cannot tell why noth… | demo-docs-ux | open | 3 | 0 | Demo preflight: surface missing keys/backends before the first tick |
+| 12 | [#224](https://github.com/browser-use/jev-ultrafast/issues/224) Choose next 会报错Model provider returned HTTP 451… | wire-providers | open | 3 | 0 | Name the region block in the hosted-path error text; point at the local backend |
+| 13 | [#225](https://github.com/browser-use/jev-ultrafast/issues/225) When I click "Choose next", I get an error: Mod… | wire-providers | open | 3 | 0 | Same fix as #224 (duplicate report) -- one error-text change covers both |
 
 ## 2. Corpus snapshot
 
@@ -47,7 +46,7 @@ Open + partial + unclassified, most-hit first. Noise and handled issues are excl
 | decide-accuracy | 5 | 1 | 0 | 4 | 0 |
 | loop-control | 5 | 4 | 0 | 1 | 0 |
 | text-helper | 5 | 5 | 0 | 0 | 0 |
-| perceive-enumeration | 4 | 3 | 1 | 0 | 0 |
+| perceive-enumeration | 4 | 4 | 0 | 0 | 0 |
 | execute-act | 2 | 2 | 0 | 0 | 0 |
 | perception-fidelity | 1 | 0 | 0 | 1 | 0 |
 | wire-providers | 13 | 7 | 2 | 2 | 2 |
@@ -87,8 +86,8 @@ The second model that writes field text: element identity, stale-fill cache, nul
 |---|---|---|---|
 | [#157](https://github.com/browser-use/jev-ultrafast/issues/157) One transient text-model failure aborts the whole r… | handled | 0 | code: src/account_vault/model.py:370, src/account_vault/model.py:413, tests/test_regressions.py:176; port notes: Fixed table; drift review §8 |
 | [#191](https://github.com/browser-use/jev-ultrafast/issues/191) TYPE_TEXT cache key has no element identity: a stal… | handled | 0 | code: src/account_vault/agent.py:410, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
-| [#198](https://github.com/browser-use/jev-ultrafast/issues/198) TYPE_TEXT helper cannot distinguish same-labeled fi… | handled | 0 | code: src/account_vault/snapshot.js:98, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
-| [#202](https://github.com/browser-use/jev-ultrafast/issues/202) TYPE_TEXT helper context omits element ID and outer… | handled | 0 | code: src/account_vault/snapshot.js:98, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
+| [#198](https://github.com/browser-use/jev-ultrafast/issues/198) TYPE_TEXT helper cannot distinguish same-labeled fi… | handled | 0 | code: src/account_vault/snapshot.js:116, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
+| [#202](https://github.com/browser-use/jev-ultrafast/issues/202) TYPE_TEXT helper context omits element ID and outer… | handled | 0 | code: src/account_vault/snapshot.js:116, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
 | [#203](https://github.com/browser-use/jev-ultrafast/issues/203) TEXT_VALUE contract mismatch: model returning {"tex… | handled | 0 | code: src/account_vault/model.py:381, tests/test_agent.py:330, tests/test_regressions.py:157; port notes: Fixed table; drift review §8 |
 
 ### perceive-enumeration
@@ -97,10 +96,10 @@ The snapshot's element table misses or mislabels controls, so the right action i
 
 | Issue | Status | Comments | Evidence / note |
 |---|---|---|---|
-| [#23](https://github.com/browser-use/jev-ultrafast/issues/23) Element table misses clickable non-native elements,… | partial | 2 | code: src/account_vault/snapshot.js:49, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:358; port notes: Fixed table; drift review §8; drift review P1 · residual: [onclick] rows handled; non-onclick clickable rows remain (drift P1.9) |
-| [#215](https://github.com/browser-use/jev-ultrafast/issues/215) Native input types (date, time, datetime-local, mon… | handled | 0 | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:68, src/account_vault/static_dom.py:351; port notes: Fixed table; drift review §8 |
-| [#218](https://github.com/browser-use/jev-ultrafast/issues/218) Bare contenteditable / contenteditable="" elements… | handled | 0 | code: src/account_vault/snapshot.js:44, tests/test_static.py:28; port notes: Fixed table; drift review §8 |
-| [#227](https://github.com/browser-use/jev-ultrafast/issues/227) date inputs are never enumerated, so the agent cann… | handled | 0 | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:68, src/account_vault/static_dom.py:351; port notes: Fixed table; drift review §8; drift review P0 · residual: enumeration in port notes; CDP native-commit landed later in code |
+| [#23](https://github.com/browser-use/jev-ultrafast/issues/23) Element table misses clickable non-native elements,… | handled | 2 | code: src/account_vault/snapshot.js:56, src/account_vault/snapshot.js:82, src/account_vault/snapshot.js:84; port notes: Fixed table; drift review §8; drift review P1 |
+| [#215](https://github.com/browser-use/jev-ultrafast/issues/215) Native input types (date, time, datetime-local, mon… | handled | 0 | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:432; port notes: Fixed table; drift review §8 |
+| [#218](https://github.com/browser-use/jev-ultrafast/issues/218) Bare contenteditable / contenteditable="" elements… | handled | 0 | code: src/account_vault/snapshot.js:51, tests/test_static.py:28; port notes: Fixed table; drift review §8 |
+| [#227](https://github.com/browser-use/jev-ultrafast/issues/227) date inputs are never enumerated, so the agent cann… | handled | 0 | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:432; port notes: Fixed table; drift review §8; drift review P0 · residual: enumeration in port notes; CDP native-commit landed later in code |
 
 ### execute-act
 
@@ -109,7 +108,7 @@ A correct decision is applied to the wrong control or wrong value (stale ids, du
 | Issue | Status | Comments | Evidence / note |
 |---|---|---|---|
 | [#132](https://github.com/browser-use/jev-ultrafast/issues/132) Stale action ids can select a different live contro… | handled | 0 | code: src/account_vault/agent.py:267, src/account_vault/agent.py:385, src/account_vault/model.py:269; port notes: Fixed table; drift review §8 |
-| [#216](https://github.com/browser-use/jev-ultrafast/issues/216) SELECT execution assigns e.value, so duplicate or d… | handled | 0 | code: src/account_vault/static_dom.py:578, tests/test_browser_cdp.py:673, tests/test_static.py:159; port notes: Fixed table; drift review §8 |
+| [#216](https://github.com/browser-use/jev-ultrafast/issues/216) SELECT execution assigns e.value, so duplicate or d… | handled | 0 | code: src/account_vault/static_dom.py:777, tests/test_browser_cdp.py:673, tests/test_static.py:159; port notes: Fixed table; drift review §8 |
 
 ### perception-fidelity
 
@@ -192,6 +191,7 @@ Each row cites where the handling is recorded. Code citations are `file:line` at
 | [#5](https://github.com/browser-use/jev-ultrafast/issues/5) Fix Windows static asset decoding in demo server | browser-cdp | code: src/account_vault/demo.py:160; port notes: Fixed table; drift review §8 |
 | [#11](https://github.com/browser-use/jev-ultrafast/issues/11) Support LLMTR as a text-helper provider | wire-providers | code: src/account_vault/model.py:351; port notes: Fixed table; drift review §8 |
 | [#14](https://github.com/browser-use/jev-ultrafast/issues/14) app not functioning | browser-cdp | code: src/account_vault/browser.py:152, src/account_vault/browser.py:542, src/account_vault/static/app.js:104; drift review P0; port notes: deliberately NOT fixed |
+| [#23](https://github.com/browser-use/jev-ultrafast/issues/23) Element table misses clickable non-native elements,… | perceive-enumeration | code: src/account_vault/snapshot.js:56, src/account_vault/snapshot.js:82, src/account_vault/snapshot.js:84; port notes: Fixed table; drift review §8; drift review P1 |
 | [#36](https://github.com/browser-use/jev-ultrafast/issues/36) Missing TEXT_MODEL_API_KEY crashes mid-run; code de… | wire-providers | code: src/account_vault/agent.py:138, src/account_vault/demo.py:53, src/account_vault/model.py:395; port notes: Fixed table; drift review §8 |
 | [#55](https://github.com/browser-use/jev-ultrafast/issues/55) Model-call budget (MAX_STEPS * 2) is undocumented a… | loop-control | code: src/account_vault/agent.py:316, src/account_vault/demo.py:54, src/account_vault/questions.py:43; port notes: Fixed table; drift review §8 |
 | [#87](https://github.com/browser-use/jev-ultrafast/issues/87) Model responses with invalid JSON leak decoder erro… | wire-providers | code: src/account_vault/model.py:67, tests/test_regressions.py:119; port notes: Fixed table; drift review §8 |
@@ -204,14 +204,14 @@ Each row cites where the handling is recorded. Code citations are `file:line` at
 | [#157](https://github.com/browser-use/jev-ultrafast/issues/157) One transient text-model failure aborts the whole r… | text-helper | code: src/account_vault/model.py:370, src/account_vault/model.py:413, tests/test_regressions.py:176; port notes: Fixed table; drift review §8 |
 | [#158](https://github.com/browser-use/jev-ultrafast/issues/158) post_json treats HTTP 200 with an error body as a s… | wire-providers | code: tests/test_regressions.py:110; port notes: Fixed table; drift review §8 |
 | [#191](https://github.com/browser-use/jev-ultrafast/issues/191) TYPE_TEXT cache key has no element identity: a stal… | text-helper | code: src/account_vault/agent.py:410, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
-| [#198](https://github.com/browser-use/jev-ultrafast/issues/198) TYPE_TEXT helper cannot distinguish same-labeled fi… | text-helper | code: src/account_vault/snapshot.js:98, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
-| [#202](https://github.com/browser-use/jev-ultrafast/issues/202) TYPE_TEXT helper context omits element ID and outer… | text-helper | code: src/account_vault/snapshot.js:98, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
+| [#198](https://github.com/browser-use/jev-ultrafast/issues/198) TYPE_TEXT helper cannot distinguish same-labeled fi… | text-helper | code: src/account_vault/snapshot.js:116, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
+| [#202](https://github.com/browser-use/jev-ultrafast/issues/202) TYPE_TEXT helper context omits element ID and outer… | text-helper | code: src/account_vault/snapshot.js:116, tests/test_regressions.py:192; port notes: Fixed table; drift review §8 |
 | [#203](https://github.com/browser-use/jev-ultrafast/issues/203) TEXT_VALUE contract mismatch: model returning {"tex… | text-helper | code: src/account_vault/model.py:381, tests/test_agent.py:330, tests/test_regressions.py:157; port notes: Fixed table; drift review §8 |
-| [#215](https://github.com/browser-use/jev-ultrafast/issues/215) Native input types (date, time, datetime-local, mon… | perceive-enumeration | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:68, src/account_vault/static_dom.py:351; port notes: Fixed table; drift review §8 |
-| [#216](https://github.com/browser-use/jev-ultrafast/issues/216) SELECT execution assigns e.value, so duplicate or d… | execute-act | code: src/account_vault/static_dom.py:578, tests/test_browser_cdp.py:673, tests/test_static.py:159; port notes: Fixed table; drift review §8 |
+| [#215](https://github.com/browser-use/jev-ultrafast/issues/215) Native input types (date, time, datetime-local, mon… | perceive-enumeration | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:432; port notes: Fixed table; drift review §8 |
+| [#216](https://github.com/browser-use/jev-ultrafast/issues/216) SELECT execution assigns e.value, so duplicate or d… | execute-act | code: src/account_vault/static_dom.py:777, tests/test_browser_cdp.py:673, tests/test_static.py:159; port notes: Fixed table; drift review §8 |
 | [#217](https://github.com/browser-use/jev-ultrafast/issues/217) .env loader keeps quotes, inline comments, whitespa… | wire-providers | code: src/account_vault/demo.py:43, tests/test_regressions.py:340; port notes: Fixed table; drift review §8 |
-| [#218](https://github.com/browser-use/jev-ultrafast/issues/218) Bare contenteditable / contenteditable="" elements… | perceive-enumeration | code: src/account_vault/snapshot.js:44, tests/test_static.py:28; port notes: Fixed table; drift review §8 |
-| [#227](https://github.com/browser-use/jev-ultrafast/issues/227) date inputs are never enumerated, so the agent cann… | perceive-enumeration | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:68, src/account_vault/static_dom.py:351; port notes: Fixed table; drift review §8; drift review P0 |
+| [#218](https://github.com/browser-use/jev-ultrafast/issues/218) Bare contenteditable / contenteditable="" elements… | perceive-enumeration | code: src/account_vault/snapshot.js:51, tests/test_static.py:28; port notes: Fixed table; drift review §8 |
+| [#227](https://github.com/browser-use/jev-ultrafast/issues/227) date inputs are never enumerated, so the agent cann… | perceive-enumeration | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:432; port notes: Fixed table; drift review §8; drift review P0 |
 | [#241](https://github.com/browser-use/jev-ultrafast/issues/241) Decisions endpoint hardcoded to api.typesafe.ai: Ve… | wire-providers | code: src/account_vault/model.py:442, src/account_vault/settings.py:36, tests/test_regressions.py:138; port notes: Fixed table; drift review §8 |
 | [#247](https://github.com/browser-use/jev-ultrafast/issues/247) Jev loops through catalog navigation instead of sor… | decide-accuracy | code: src/account_vault/agent.py:216, src/account_vault/agent.py:522, tests/test_regressions.py:475; port notes: Fixed table; drift review §8; drift review P1; port notes: deliberately NOT fixed |
 
@@ -220,7 +220,8 @@ Each row cites where the handling is recorded. Code citations are `file:line` at
 These read as open in the port notes or drift review but are fixed in code. Verify, then update the docs:
 
 - [#14](https://github.com/browser-use/jev-ultrafast/issues/14) app not functioning — code: src/account_vault/browser.py:152, src/account_vault/browser.py:542, src/account_vault/static/app.js:104; drift review P0; port notes: deliberately NOT fixed.
-- [#227](https://github.com/browser-use/jev-ultrafast/issues/227) date inputs are never enumerated, so the agent cannot fill them — code: src/account_vault/model.py:122, src/account_vault/snapshot.js:68, src/account_vault/static_dom.py:351; port notes: Fixed table; drift review §8; drift review P0.
+- [#23](https://github.com/browser-use/jev-ultrafast/issues/23) Element table misses clickable non-native elements, so suggestion rows are unre… — code: src/account_vault/snapshot.js:56, src/account_vault/snapshot.js:82, src/account_vault/snapshot.js:84; port notes: Fixed table; drift review §8; drift review P1.
+- [#227](https://github.com/browser-use/jev-ultrafast/issues/227) date inputs are never enumerated, so the agent cannot fill them — code: src/account_vault/model.py:122, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:432; port notes: Fixed table; drift review §8; drift review P0.
 
 ## 6. Outside the tracker
 
@@ -292,7 +293,7 @@ Curated sources checked against their primary pages on 2026-11-22 (see `EXTERNAL
 | [#14](https://github.com/browser-use/jev-ultrafast/issues/14) | app not functioning | browser-cdp | handled | 3 | 0 | ahmed-alqasaby | 2026-10-13 |
 | [#16](https://github.com/browser-use/jev-ultrafast/issues/16) | Setup friction: SOCKS proxy crash on startup; browser-harness a… | browser-cdp | partial | 0 | 0 | 0xsline | 2026-09-18 |
 | [#21](https://github.com/browser-use/jev-ultrafast/issues/21) | How can I get the TYPESAFE_API_KEY? | wire-providers | ignore | 2 | 0 | wxyuwojiusi | 2026-09-22 |
-| [#23](https://github.com/browser-use/jev-ultrafast/issues/23) | Element table misses clickable non-native elements, so suggesti… | perceive-enumeration | partial | 2 | 0 | Mind-Hand | 2026-09-23 |
+| [#23](https://github.com/browser-use/jev-ultrafast/issues/23) | Element table misses clickable non-native elements, so suggesti… | perceive-enumeration | handled | 2 | 0 | Mind-Hand | 2026-09-23 |
 | [#25](https://github.com/browser-use/jev-ultrafast/issues/25) | [Feature Request]: Decouple Jev inference provider to support a… | wire-providers | partial | 1 | 0 | ycmjason | 2026-09-18 |
 | [#26](https://github.com/browser-use/jev-ultrafast/issues/26) | Question about the Runtime/JeV boundary in jev-ultrafast | community-noise | ignore | 2 | 0 | goatliamia | 2026-09-22 |
 | [#36](https://github.com/browser-use/jev-ultrafast/issues/36) | Missing TEXT_MODEL_API_KEY crashes mid-run; code default base U… | wire-providers | handled | 1 | 0 | MrJev | 2026-09-19 |

@@ -9,8 +9,9 @@ page_key/guards, fresh(page, action), act(action, page, text) — by parsing
 HTML with the standard library and mutating an in-memory DOM.
 
 Semantics intentionally mirror snapshot.js, including this port's coverage
-fixes (date/time/range inputs, bare contenteditable, [onclick] rows are all
-enumerated; select execution uses option_index). Interactive behaviour is
+fixes (date/time/range inputs, bare contenteditable, [onclick] rows and
+the #23 second pass -- pointer rows, icon-only controls, concealed-input
+label proxies -- are all enumerated; select execution uses option_index). Interactive behaviour is
 limited to what static fixtures need: fill, check/radio, select, in-page
 anchors, relative-file navigation, and revealing a hidden results region on
 submit (see _submit). There is no JavaScript execution; a fixture that
@@ -173,7 +174,9 @@ class _Parser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if data.strip():
             self.stack[-1].children.append(data)
-        if self.stack[-1].tag == "title":
+        # An SVG <title> names its icon (see _icon_name); only the
+        # document <title> may become the page title.
+        if self.stack[-1].tag == "title" and not any(e.tag == "svg" for e in self.stack[:-1]):
             self.title += data
 
 
@@ -264,6 +267,84 @@ class StaticBrowser:
                 return False
             current = current.parent
         return True
+
+    def _style_map(self, element: Element) -> dict[str, str]:
+        # Inline declarations only: offline there is no cascade, so a
+        # fixture declares cursor/position/concealment where the live
+        # backend would compute it (stylesheets stay a live-only signal).
+        result: dict[str, str] = {}
+        for declaration in element.get("style", "").split(";"):
+            key, separator, value = declaration.partition(":")
+            if separator:
+                result[key.strip().lower()] = " ".join(value.split()).lower()
+        return result
+
+    def _concealed(self, element: Element) -> bool:
+        # Mirror of snapshot.js concealed(): no hittable box of its own.
+        if not self._visible(element):
+            return True
+        style = self._style_map(element)
+        if style.get("opacity") == "0":
+            return True
+        return style.get("width") in {"0", "0px"} or style.get("height") in {"0", "0px"}
+
+    def _label_for(self, element: Element) -> Element | None:
+        element_id = element.get("id")
+        if element_id and element_id in self.labels_for:
+            return self.labels_for[element_id]
+        current = element.parent
+        while current is not None and current.tag != "#root":
+            if current.tag == "label":
+                return current
+            current = current.parent
+        return None
+
+    def _icon_name(self, element: Element) -> str:
+        # Mirror of snapshot.js iconName(): name an icon-only control
+        # from its svg (title, aria-label, id, icon-* class token).
+        svg = next((e for e in self._walk(element) if e.tag == "svg"), None)
+        if svg is None:
+            return ""
+        title = next((e for e in self._walk(svg) if e.tag == "title"), None)
+        if title is not None and title.inner_text():
+            return title.inner_text()[:120]
+        aria = (svg.get("aria-label") or "").strip()
+        if aria:
+            return aria[:120]
+        svg_id = svg.get("id")
+        if svg_id:
+            return svg_id[:120]
+        for token in svg.get("class", "").split():
+            match = re.search(r"icon-([a-z0-9-]+)$", token, flags=re.I)
+            if match:
+                return match.group(1)[:120]
+        return ""
+
+    def _in_overlay(self, element: Element) -> bool:
+        current, depth = element.parent, 0
+        while current is not None and current.tag != "#root" and depth < 8:
+            if self._style_map(current).get("position") in {"absolute", "fixed"}:
+                return True
+            current, depth = current.parent, depth + 1
+        return False
+
+    def _pointer_list(self, element: Element) -> bool:
+        parent = element.parent
+        if parent is None:
+            return False
+        listed = parent.tag in {"ul", "ol"} or parent.get("role") in {"list", "listbox", "menu", "tablist"}
+        if not listed:
+            return False
+        siblings = [
+            child
+            for child in parent.children
+            if not isinstance(child, str)
+            and child is not element
+            and child.tag == element.tag
+            and self._visible(child)
+            and self._style_map(child).get("cursor") == "pointer"
+        ]
+        return len(siblings) >= 2
 
     def _disabled(self, element: Element) -> bool:
         if "disabled" in element.attrs:
@@ -358,6 +439,21 @@ class StaticBrowser:
         # Same DEVIATION as snapshot.js (#23): clickable non-native rows.
         if "onclick" in element.attrs:
             return "button"
+        # Same DEVIATION as snapshot.js (#23): a label standing in for
+        # its concealed radio/checkbox keeps the input's role in guards.
+        if element.tag == "label":
+            inner = next(
+                (
+                    e
+                    for e in self._walk(element)
+                    if e.tag == "input" and e.get("type", "").lower() in {"radio", "checkbox"}
+                ),
+                None,
+            )
+            if inner is None and element.get("for"):
+                inner = self.by_id.get(element.get("for") or "")
+            if inner is not None and inner.get("type", "").lower() in {"radio", "checkbox"} and self._concealed(inner):
+                return inner.get("type", "").lower()
         return None
 
     def _value(self, element: Element) -> str:
@@ -415,6 +511,10 @@ class StaticBrowser:
                 continue
             input_type = element.get("type", "").lower() if element.tag == "input" else ""
             if input_type in SAFE_EXCLUDE or not self._visible(element) or self._disabled(element):
+                continue
+            # Concealed radios/checkboxes are re-offered via their label
+            # in the second pass below (mirror of snapshot.js, #23).
+            if input_type in {"radio", "checkbox"} and self._concealed(element):
                 continue
             # Enumerate the same candidate set as snapshot.js's selector.
             candidate = (
@@ -477,6 +577,105 @@ class StaticBrowser:
                 actions.append({**base, "kind": "fill" if editable else "click", "value": value})
                 if editable:
                     actions.append({**base, "kind": "click", "value": value, "label": "Open " + base["label"]})
+        # Second pass (mirror of snapshot.js, upstream issue #23 second
+        # half): label proxies for concealed radios/checkboxes, then
+        # non-onclick clickable rows / icon-only controls. Same gates:
+        # click evidence + label + list/overlay context unless wiring or
+        # icon speaks for itself, innermost only, capped at 40 extras.
+        collected = {action["node"] for action in actions}
+        extras = 0
+        for element in self._walk(self.root):
+            if extras >= 40:
+                break
+            if element.tag != "input" or element.get("type", "").lower() not in {"radio", "checkbox"}:
+                continue
+            if self._disabled(element) or not self._concealed(element):
+                continue
+            label_el = self._label_for(element)
+            if label_el is None or not self._visible(label_el) or self._disabled(label_el):
+                continue
+            if label_el.node in collected:
+                continue
+            collected.add(label_el.node)
+            kind = element.get("type", "").lower()
+            actions.append(
+                {
+                    "node": label_el.node,
+                    "role": kind,
+                    "label": self._name(label_el) or self._name(element) or kind,
+                    "kind": "click",
+                    "value": "",
+                    "checked": str(element.checked).lower(),
+                    "input_type": kind,
+                }
+            )
+            extras += 1
+
+        def _is_control(el: Element) -> bool:
+            return (
+                el.tag in {"button", "input", "textarea", "select", "summary"}
+                or (el.tag == "a" and "href" in el.attrs)
+                or "contenteditable" in el.attrs
+                or "onclick" in el.attrs
+                or el.get("role") in ROLES
+            )
+
+        candidates: list[tuple[Element, str, bool, bool, str]] = []
+        for element in self._walk(self.root):
+            if len(candidates) >= 80:
+                break
+            if element.tag not in {"li", "div", "span", "td", "dd", "p"}:
+                continue
+            if not self._visible(element) or self._disabled(element) or _is_control(element):
+                continue
+            ancestor, inside = element.parent, False
+            while ancestor is not None and ancestor.tag != "#root":
+                if _is_control(ancestor):
+                    inside = True
+                    break
+                ancestor = ancestor.parent
+            if inside or any(_is_control(e) for e in self._walk(element) if e is not element):
+                continue
+            pointer = self._style_map(element).get("cursor") == "pointer"
+            try:
+                tab_stop = int(element.get("tabindex") or "-1") >= 0
+            except ValueError:
+                tab_stop = False
+            strong = tab_stop or "data-clickable" in element.attrs or "data-action" in element.attrs
+            if not pointer and not strong:
+                continue
+            icon = self._icon_name(element)
+            label_text = self._name(element).strip()[:120] or icon
+            if not label_text:
+                continue
+            listed = self._pointer_list(element)
+            if not strong and not icon and not listed and not self._in_overlay(element):
+                continue
+            candidates.append((element, label_text, listed, strong, icon))
+        # Same row-collapse as snapshot.js: a span whose only evidence is
+        # inherited from a candidate row does not split the row in two.
+        candidate_elements = {el for el, _t, _l, _s, _i in candidates}
+        rows = [entry for entry in candidates if entry[3] or entry[4] or entry[0].parent not in candidate_elements]
+        candidate_nodes = {el.node for el, _t, _l, _s, _i in rows}
+        for element, label_text, listed, _strong, _icon in rows:
+            if extras >= 40:
+                break
+            if element.node in collected:
+                continue
+            if any(e.node in candidate_nodes for e in self._walk(element) if e is not element):
+                continue  # innermost only: a nested candidate speaks for this subtree
+            collected.add(element.node)
+            extra: dict[str, Any] = {
+                "node": element.node,
+                "role": "option" if listed else "button",
+                "label": label_text,
+                "kind": "click",
+                "value": "",
+            }
+            if element.get("id"):
+                extra["dom_id"] = element.get("id")
+            actions.append(extra)
+            extras += 1
         words: list[str] = []
         length = 0
         for element in self._walk(self.root):
@@ -587,6 +786,15 @@ class StaticBrowser:
         return {"executed": action["id"]}
 
     def _click(self, element: Element) -> None:
+        # A label proxy (#23) activates its concealed control, exactly
+        # as a real click on the label does in a browser.
+        if element.tag == "label":
+            inner = next((e for e in self._walk(element) if e.tag == "input"), None)
+            if inner is None and element.get("for"):
+                inner = self.by_id.get(element.get("for") or "")
+            if inner is not None:
+                self._click(inner)
+                return
         input_type = element.get("type", "").lower() if element.tag == "input" else ""
         if input_type == "checkbox":
             element.checked = not element.checked

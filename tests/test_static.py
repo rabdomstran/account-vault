@@ -391,3 +391,87 @@ def test_cycle_drop_lets_the_runner_up_finish_the_task():
             "View Casa Flora",
         ]
         assert "Free cancellation included" in agent.state["page"]["text"]
+
+
+# --- upstream issue #23 residual: non-onclick clickable rows ---------------
+# The first #23 fix enumerated [onclick] rows only. Rows wired with
+# addEventListener (no attribute), icon-only in-flow controls, and
+# hidden-input labels (AntD Radio.Button) stayed invisible on both
+# backends -- the issue body plus its two verified sub-case comments.
+# Offline there is no layout or computed style, so fixtures declare the
+# same signals inline (style="cursor: pointer", positioned ancestor,
+# tabindex); the live shapes are pinned in tests/test_live_cdp.py.
+
+CLICKABLE_ROWS = """<html><head><title>Stations</title></head><body>
+  <form><label>From <input type="text" name="from"></label></form>
+  <div id="cities" style="position: absolute">
+    <div class="cityline" style="cursor: pointer"><span>Beijing North</span><span>beijingbei</span></div>
+    <div class="cityline" style="cursor: pointer"><span>Beijing South</span><span>beijingnan</span></div>
+  </div>
+  <ul>
+    <li style="cursor: pointer">Alpha town</li>
+    <li style="cursor: pointer">Beta town</li>
+    <li style="cursor: pointer">Gamma town</li>
+  </ul>
+  <p style="cursor: pointer">Just a pointer paragraph</p>
+  <div tabindex="0">Keyboard row</div>
+  <div style="cursor: pointer">
+    <svg id="star" width="16" height="16"><title>Star this repo</title></svg>
+  </div>
+  <div style="cursor: pointer"><svg id="settings" width="16" height="16"></svg></div>
+  <div style="cursor: pointer; display: none"><span>Hidden row</span></div>
+  <button>Search</button>
+</body></html>"""
+
+
+def test_non_onclick_clickable_rows_reach_the_table():
+    page = StaticBrowser.from_html(CLICKABLE_ROWS).observe()
+    clicks = {a["label"]: a for a in page["actions"] if a["kind"] == "click"}
+    # Overlay-layer suggestion rows (the issue body's cityline shape):
+    # the row is offered once, innermost -- not once per inner span.
+    assert clicks["Beijing North beijingbei"]["role"] == "button"
+    assert clicks["Beijing South beijingnan"]["role"] == "button"
+    assert "Beijing North" not in clicks and "beijingbei" not in clicks
+    # Pointer-cursor sibling lists read as options, like native listboxes.
+    assert clicks["Alpha town"]["role"] == "option"
+    assert clicks["Gamma town"]["role"] == "option"
+    # Explicit wiring needs no overlay/list context.
+    assert clicks["Keyboard row"]["role"] == "button"
+    # Icon-only in-flow controls are named from icon evidence.
+    assert clicks["Star this repo"]["role"] == "button"
+    assert clicks["settings"]["role"] == "button"
+    # Noise gates: a lone pointer paragraph and a hidden row stay out,
+    # and the native table is unchanged.
+    assert "Just a pointer paragraph" not in clicks
+    assert "Hidden row" not in clicks
+    assert clicks["Search"]["role"] == "button"
+    assert page["title"] == "Stations"  # svg <title> must not leak here
+
+
+def test_hidden_radio_label_proxy_keeps_role_and_checked():
+    # AntD Radio.Button (issue #23 comment): the native radio is 0x0 /
+    # opacity:0 inside a visible label. Offline the hiding is inline;
+    # live, stylesheet hiding is covered by tests/test_live_cdp.py.
+    markup = """<html><head><title>Docs</title></head><body>
+      <div>
+        <label style="cursor: pointer"><span><input type="radio" name="kind" value="expense"
+          style="width: 0; height: 0; opacity: 0" checked></span><span>Expense reports (0)</span></label>
+        <label style="cursor: pointer"><span><input type="radio" name="kind" value="payment"
+          style="width: 0; height: 0; opacity: 0"></span><span>Payment requests (3)</span></label>
+      </div>
+      <button>Search</button>
+    </body></html>"""
+    browser = StaticBrowser.from_html(markup)
+    page = browser.observe()
+    radios = {a["label"]: a for a in page["actions"] if a.get("role") == "radio"}
+    assert set(radios) == {"Expense reports (0)", "Payment requests (3)"}
+    # The offered target is the visible label (the hittable rect on the
+    # live backend), never the concealed input itself.
+    assert all(browser.by_node[a["node"]].tag == "label" for a in radios.values())
+    assert radios["Expense reports (0)"]["checked"] == "true"
+    assert radios["Payment requests (3)"]["checked"] == "false"
+    # Clicking the label proxy selects the wrapped radio (group flips).
+    browser.act(radios["Payment requests (3)"], page)
+    after = {a["label"]: a for a in browser.observe()["actions"] if a.get("role") == "radio"}
+    assert after["Payment requests (3)"]["checked"] == "true"
+    assert after["Expense reports (0)"]["checked"] == "false"

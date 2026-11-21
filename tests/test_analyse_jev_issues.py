@@ -112,9 +112,9 @@ def test_resolve_status_open_partial_ignore_and_not_a_fix():
     drift = analyser.parse_drift_doc(DRIFT_FRAGMENT)
     open_rec = _record(51, "Windows: owned tab is backgrounded")
     assert analyser.resolve_status(open_rec, port, drift, {})[0] == "open"
-    partial_rec = _record(23, "Element table misses clickable non-native elements")
-    status, _ev, _stale = analyser.resolve_status(partial_rec, port, drift, {23: ["src/x.py:1"]})
-    assert status == "partial"  # onclick half fixed; residual stays open
+    partial_rec = _record(125, "Support local resident decision backend and MCP")
+    status, _ev, _stale = analyser.resolve_status(partial_rec, port, drift, {125: ["src/x.py:1"]})
+    assert status == "partial"  # backend half fixed; MCP residual stays open
     cited_rec = _record(67, "Jev ultra fast Can't complete simple task")
     status, evidence, _stale = analyser.resolve_status(cited_rec, port, drift, {67: ["src/x.py:1"]})
     assert status == "open" and any("not a fix" in note for note in evidence)

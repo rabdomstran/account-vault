@@ -512,3 +512,76 @@ def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome
     assert all("BLOCKED" not in ops for ops in decider.offered[1:3])
     assert decider.scroll_seen[1]["y"] > 0 and decider.scroll_seen[1]["can_scroll_down"] is True
     assert decider.scroll_seen[1]["can_scroll_up"] is True
+
+
+# --- upstream issue #23 residual: clickables without an onclick attribute -
+# The first #23 fix covered [onclick] rows only. Three verified shapes
+# from the issue thread stayed invisible: addEventListener suggestion
+# rows in a positioned layer (issue body), icon-only in-flow controls
+# (first comment), and AntD Radio.Button labels wrapping a 0x0 radio
+# (second comment, its exact stylesheet repro). Real Chrome is required:
+# cursor, position and concealment are computed-style/geometry facts.
+
+CLICKABLE_HTML = """<!doctype html><meta charset="utf-8"><title>Clickable checks</title>
+<style>body{margin:30px;font:16px sans-serif}
+#cities{position:absolute;left:30px;top:70px;border:1px solid #999;background:#fff}
+.cityline{cursor:pointer;padding:8px 30px}
+#gear{width:24px;height:24px;cursor:pointer;margin-top:150px}
+.group{display:flex;margin-top:30px}
+.btn{position:relative;cursor:pointer;border:1px solid #d9d9d9;padding:4px 15px}
+.btn input{width:0;height:0;margin:0;opacity:0}
+#noise{cursor:pointer;margin-top:20px}</style>
+<label>From <input id="from" type="text"></label>
+<div id="cities">
+  <div class="cityline"><span>Beijing North</span><span>beijingbei</span></div>
+  <div class="cityline"><span>Beijing South</span><span>beijingnan</span></div>
+</div>
+<div id="gear"><svg id="settings" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg></div>
+<div class="group">
+  <label class="btn"><span><input type="radio" name="kind" value="expense" checked></span>
+  <span>Expense reports (0)</span></label>
+  <label class="btn"><span><input type="radio" name="kind" value="payment"></span>
+  <span>Payment requests (3)</span></label>
+</div>
+<p id="noise">Just a pointer paragraph</p>
+<button>Search</button>
+<script>window.__picked=[];window.__gear=0;
+for (const row of document.querySelectorAll('.cityline'))
+  row.addEventListener('click',()=>window.__picked.push(row.textContent.trim()));
+document.getElementById('gear').addEventListener('click',()=>window.__gear++);</script>"""
+
+
+def test_live_non_onclick_clickables_are_offered_and_act(dedicated_chrome):
+    from urllib.parse import quote
+
+    from account_vault.browser import CdpBrowser
+
+    browser = CdpBrowser("data:text/html," + quote(CLICKABLE_HTML))
+    try:
+        page = browser.observe(screenshot=False)
+        clicks = {a["label"]: a for a in page["actions"] if a["kind"] == "click"}
+        # addEventListener rows: offered once (innermost), as buttons.
+        assert clicks["Beijing North beijingbei"]["role"] == "button", sorted(clicks)
+        assert clicks["Beijing South beijingnan"]["role"] == "button"
+        assert "Beijing North" not in clicks  # no per-span duplicates
+        # Icon-only in-flow control, named from the svg id.
+        assert clicks["settings"]["role"] == "button"
+        # AntD labels keep radio semantics + checked state.
+        radios = {a["label"]: a for a in page["actions"] if a.get("role") == "radio"}
+        assert set(radios) == {"Expense reports (0)", "Payment requests (3)"}, sorted(radios)
+        assert radios["Expense reports (0)"]["checked"] == "true"
+        assert radios["Payment requests (3)"]["checked"] == "false"
+        assert "Just a pointer paragraph" not in clicks  # noise gate holds
+
+        browser.act(clicks["Beijing South beijingnan"], page)
+        assert browser.evaluate("window.__picked") == ["Beijing Southbeijingnan"]
+        page = browser.observe(screenshot=False)
+        gear = next(a for a in page["actions"] if a["label"] == "settings")
+        browser.act(gear, page)
+        assert browser.evaluate("window.__gear") == 1
+        page = browser.observe(screenshot=False)
+        payment = next(a for a in page["actions"] if a["label"] == "Payment requests (3)")
+        browser.act(payment, page)
+        assert browser.evaluate("document.querySelector('input[value=payment]').checked") is True
+    finally:
+        browser.close()
