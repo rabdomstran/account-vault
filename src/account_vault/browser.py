@@ -9,8 +9,10 @@ DEVIATION comments mark deliberate differences.
 
 import hashlib
 import json
+import os
 import sys
 import time
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,104 @@ def cdp(method: str, **params: Any) -> Any:
     """Indirection kept so tests can monkeypatch account_vault.browser.cdp."""
     real_cdp, _ = _harness()
     return real_cdp(method, **params)
+
+
+# DEVIATION: never attach to the user's everyday browser by default
+# (upstream issue #16, part a). Unpinned, browser-harness discovers a
+# local Chrome from the profile directories' DevToolsActivePort files
+# (falling back to probing 9222/9223) and may even launch it -- i.e. the
+# daily profile with its logged-in tabs -- and upstream calls
+# ensure_daemon() straight into that. For an account vault that default
+# is the hazard itself, so construction requires either a pinned CDP
+# endpoint (a dedicated automation Chrome the caller launched) or an
+# explicit real-browser opt-in, and the live daemon's self-reported
+# browser kind is checked afterwards: ensure_daemon() reuses any
+# healthy daemon under BU_NAME, so a pin set after a local daemon
+# started would otherwise be silently ignored (the PR #230 trap).
+_DEDICATED_HOWTO = (
+    "Launch a dedicated Chrome with its own profile, e.g.:\n"
+    '  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" '
+    "--remote-debugging-port=9333 --user-data-dir=/tmp/account-vault-chrome about:blank\n"
+    "then pin the harness to it under a fresh daemon name:\n"
+    "  BU_CDP_URL=http://127.0.0.1:9333 BU_NAME=account-vault <your command>\n"
+    "(BU_CDP_WS=<webSocketDebuggerUrl from http://127.0.0.1:9333/json/version> also pins.)\n"
+    "To knowingly drive your everyday browser instead, set ACCOUNT_VAULT_ALLOW_REAL_BROWSER=1."
+)
+
+_daemon_browser_kind: Callable[..., Any] | None = None
+
+
+def _kind_of_daemon() -> str | None:
+    """'cloud' | 'cdp' | 'local' from the live harness daemon, else None."""
+    global _daemon_browser_kind
+    if _daemon_browser_kind is None:
+        from browser_harness.admin import daemon_browser_kind
+
+        _daemon_browser_kind = daemon_browser_kind
+    kind = _daemon_browser_kind()
+    return kind if kind in {"cloud", "cdp", "local"} else None
+
+
+def _real_browser_opt_in() -> bool:
+    return os.environ.get("ACCOUNT_VAULT_ALLOW_REAL_BROWSER", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _pinned_cdp_endpoint() -> str:
+    return (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL") or "").strip()
+
+
+def _guard_attach() -> bool:
+    """Refuse an unpinned, unacknowledged attach before any daemon work.
+
+    Returns the real-browser opt-in so the post-attach kind check can
+    apply the same allowance. Runs before ensure_daemon(): no daemon is
+    spawned, no Chrome is launched, nothing attaches on refusal.
+    """
+    opt_in = _real_browser_opt_in()
+    pinned = _pinned_cdp_endpoint()
+    if not pinned and not opt_in:
+        raise RuntimeError(
+            "Refusing to attach: no dedicated CDP endpoint is pinned (BU_CDP_URL/BU_CDP_WS unset), "
+            "so browser-harness would discover -- or launch -- your everyday Chrome and drive its "
+            "logged-in profile. " + _DEDICATED_HOWTO
+        )
+    if not pinned:
+        warnings.warn(
+            "ACCOUNT_VAULT_ALLOW_REAL_BROWSER is set with no pinned CDP endpoint: this run will "
+            "attach to your everyday Chrome profile, including its logged-in tabs.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return opt_in
+
+
+def _verify_daemon_kind(opt_in: bool) -> str | None:
+    """Check what the (possibly reused) daemon is actually attached to."""
+    kind = _kind_of_daemon()
+    pinned = _pinned_cdp_endpoint()
+    if kind == "local" and pinned and opt_in:
+        warnings.warn(
+            "A pinned CDP endpoint is set, but the already-running harness daemon is attached to "
+            "a local (everyday) Chrome and was reused, so the pin did not take effect. "
+            "Use a fresh BU_NAME to honor the pin.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return kind
+    if kind == "local" and not opt_in:
+        raise RuntimeError(
+            "Refusing to drive this browser: the running harness daemon is attached to a local "
+            "(everyday) Chrome, not the pinned CDP endpoint -- ensure_daemon() reuses a healthy "
+            "daemon under BU_NAME, so the pin was ignored. Stop that daemon or use a fresh "
+            "BU_NAME. " + _DEDICATED_HOWTO
+        )
+    if kind is None and not opt_in:
+        raise RuntimeError(
+            "Refusing to drive this browser: the harness daemon did not report what it is "
+            "attached to (it may predate browser-kind reporting), so a dedicated profile cannot "
+            "be verified. Restart it under a fresh BU_NAME. " + _DEDICATED_HOWTO
+        )
+    return kind
 
 
 # DEVIATION: native value controls Input.insertText cannot commit. Typing
@@ -69,14 +169,20 @@ class CoveredTarget(StalePage):
 
 class CdpBrowser:
     after_input: dict[str, Any] | None
+    # What the harness daemon reports it is attached to (#16 guard):
+    # "cdp" (pinned endpoint), "cloud", or "local" (everyday Chrome,
+    # reachable only via the explicit opt-in).
+    browser_kind: str | None
     # True after a covered rejection until the next observe: the cached
     # page's offered set is known wrong (it still lists the covered node)
     # even though its occlusion-blind marker still matches.
     _offer_stale: bool
 
     def __init__(self, url: str) -> None:
+        opt_in = _guard_attach()  # #16: refuse/warn before any daemon work
         _, ensure_daemon = _harness()
         ensure_daemon()
+        self.browser_kind = _verify_daemon_kind(opt_in)
         self.after_input = None
         self._offer_stale = False
         self.target: str | None = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]

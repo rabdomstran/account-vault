@@ -70,6 +70,14 @@ def fake_cdp(monkeypatch):
     monkeypatch.setattr(browser, "_cdp", fake)
     monkeypatch.setattr(browser, "_ensure_daemon", ensure_daemon)
     fake.ensure_daemon = ensure_daemon
+    # The #16 attach guard: construction needs a pinned endpoint (or the
+    # real-browser opt-in) and a daemon that reports a dedicated kind.
+    # Default the fake world to the pinned, dedicated case; the guard
+    # tests below override per case.
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
+    monkeypatch.delenv("ACCOUNT_VAULT_ALLOW_REAL_BROWSER", raising=False)
+    fake.browser_kind = Mock(name="daemon_browser_kind", return_value="cdp")
+    monkeypatch.setattr(browser, "_daemon_browser_kind", fake.browser_kind)
     return fake
 
 
@@ -132,6 +140,82 @@ def test_init_gives_up_waiting_after_the_deadline(fake_cdp, monkeypatch):
     instance = CdpBrowser("https://example.test/slow")
     assert instance.session == "S1"  # construction completes regardless
     assert fake_cdp.evaluate_params() == []  # never even polled
+
+
+# --- attach guard (upstream issue #16a): never the everyday browser -------
+# Unpinned, browser-harness discovers the daily Chrome from its profile
+# dirs (or probes 9222/9223, or launches it). Construction must refuse
+# that default before any daemon work, accept a pinned dedicated
+# endpoint, and still catch the stale-daemon case where ensure_daemon()
+# reuses a daemon that attached locally before the pin was set (#230).
+
+
+def _unpin(monkeypatch):
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+
+
+def test_init_refuses_unpinned_attach_before_any_daemon_work(fake_cdp, monkeypatch):
+    _unpin(monkeypatch)
+    with pytest.raises(RuntimeError, match="Refusing to attach"):
+        CdpBrowser("https://example.test/")
+    fake_cdp.ensure_daemon.assert_not_called()  # nothing spawned, launched or attached
+    assert fake_cdp.calls == []
+
+
+def test_init_refusal_names_the_dedicated_recipe_and_the_opt_in(fake_cdp, monkeypatch):
+    _unpin(monkeypatch)
+    with pytest.raises(RuntimeError) as caught:
+        CdpBrowser("https://example.test/")
+    message = str(caught.value)
+    assert "BU_CDP_URL=http://127.0.0.1:9333" in message
+    assert "--user-data-dir=" in message
+    assert "ACCOUNT_VAULT_ALLOW_REAL_BROWSER=1" in message
+
+
+def test_init_pinned_endpoint_constructs_and_records_kind(fake_cdp):
+    fake_cdp.script = ["complete"]
+    instance = CdpBrowser("https://example.test/")
+    assert instance.browser_kind == "cdp"
+    fake_cdp.ensure_daemon.assert_called_once_with()
+    fake_cdp.browser_kind.assert_called_once_with()
+
+
+def test_init_rejects_a_stale_local_daemon_despite_the_pin(fake_cdp, monkeypatch):
+    # The pin is set, but a daemon under BU_NAME already attached to the
+    # everyday Chrome and ensure_daemon() reused it: driving on would
+    # drive the real profile while believing it is dedicated.
+    fake_cdp.browser_kind.return_value = "local"
+    with pytest.raises(RuntimeError, match="attached to a local"):
+        CdpBrowser("https://example.test/")
+    assert "Target.createTarget" not in fake_cdp.methods()  # refused before opening any tab
+
+
+def test_init_fails_closed_when_daemon_kind_is_unverifiable(fake_cdp):
+    fake_cdp.browser_kind.return_value = None  # older daemon, no kind report
+    with pytest.raises(RuntimeError, match="cannot be verified"):
+        CdpBrowser("https://example.test/")
+    assert "Target.createTarget" not in fake_cdp.methods()
+
+
+def test_init_real_browser_opt_in_warns_and_attaches(fake_cdp, monkeypatch):
+    _unpin(monkeypatch)
+    monkeypatch.setenv("ACCOUNT_VAULT_ALLOW_REAL_BROWSER", "1")
+    fake_cdp.browser_kind.return_value = "local"
+    fake_cdp.script = ["complete"]
+    with pytest.warns(UserWarning, match="everyday Chrome profile"):
+        instance = CdpBrowser("https://example.test/")
+    assert instance.browser_kind == "local"
+    fake_cdp.ensure_daemon.assert_called_once_with()
+
+
+def test_init_opt_in_warns_when_a_stale_daemon_ignores_the_pin(fake_cdp, monkeypatch):
+    monkeypatch.setenv("ACCOUNT_VAULT_ALLOW_REAL_BROWSER", "true")
+    fake_cdp.browser_kind.return_value = "local"  # pin set, daemon still local
+    fake_cdp.script = ["complete"]
+    with pytest.warns(UserWarning, match="pin did not take effect"):
+        instance = CdpBrowser("https://example.test/")
+    assert instance.browser_kind == "local"
 
 
 def test_call_scopes_every_method_to_the_session(fake_cdp):

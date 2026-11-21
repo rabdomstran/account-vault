@@ -206,6 +206,27 @@ confidence falls below a tuned threshold, the step re-observes once and
 may escalate to hosted Jev — never with vault secrets or credential field
 values in state; those steps are local-only by policy.
 
+### Browser attach safety
+
+The CDP backend never attaches to your everyday Chrome by default
+(upstream issue #16): unpinned, browser-harness would discover the daily
+profile from its DevTools port files (or probe 9222/9223, or launch it).
+Pin a dedicated automation Chrome instead:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9333 --user-data-dir=/tmp/account-vault-chrome about:blank
+BU_CDP_URL=http://127.0.0.1:9333 BU_NAME=account-vault uv run account-vault-demo
+```
+
+`BU_CDP_WS` (the `webSocketDebuggerUrl` from
+`http://127.0.0.1:9333/json/version`) pins equivalently. Use a fresh
+`BU_NAME` when changing endpoints — a healthy daemon under an existing
+name is reused as-is, and the backend refuses to run if that daemon
+reports it is attached to a local (everyday) Chrome. To knowingly drive
+your everyday browser, set `ACCOUNT_VAULT_ALLOW_REAL_BROWSER=1`; startup
+then warns instead of refusing.
+
 ## Development
 
 ```bash
