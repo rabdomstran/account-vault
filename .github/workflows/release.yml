@@ -1,0 +1,87 @@
+name: Release
+
+# Tag vX.Y.Z on main -> build -> verify -> GitHub Release.
+# Publishing beyond GitHub (PyPI/TestPyPI via OIDC trusted publishing)
+# is deliberately not wired yet: it needs a one-time trusted-publisher
+# setup on the index side first. See CONTRIBUTING.md.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release (build + GitHub Release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the GitHub Release and upload assets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.12.1"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: release
+
+      # The tag is the version contract: vX.Y.Z must match both places
+      # the version is declared, or the release does not happen.
+      - name: Verify tag matches declared versions
+        run: |
+          uv run --no-project python - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          declared = pyproject["project"]["version"]
+          init = Path("src/account_vault/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'__version__ = "([^"]+)"', init)
+          assert match, "__version__ not found in src/account_vault/__init__.py"
+          assert tag == declared == match.group(1), (
+              f"tag v{tag} != pyproject {declared} / __version__ {match.group(1)}"
+          )
+          print(f"OK: releasing version {tag}")
+          PY
+
+      - name: Install dependencies
+        run: uv sync --locked --dev
+
+      # A tag does not skip the gates: the exact tagged tree must pass
+      # the same checks a PR would (fast subset here; the full matrix
+      # already ran on the tagged commit via the CI workflow).
+      - name: Gate (lint, types, tests)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy
+          uv run pytest -rs --cov=account_vault --cov-fail-under=89
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Verify packaged assets and distribution metadata
+        run: |
+          uv run --no-project python scripts/check_dist_assets.py
+          uv pip install --no-deps --target /tmp/wheel-check dist/*.whl
+          test -f /tmp/wheel-check/account_vault/snapshot.js
+          test -f /tmp/wheel-check/account_vault/static/index.html
+          uv run --no-project --with twine twine check dist/*
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

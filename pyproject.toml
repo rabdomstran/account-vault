@@ -2,6 +2,7 @@
 name = "account-vault"
 version = "0.1.0"
 description = "Ultrafast System-One browsing agent with a local-first encrypted account store."
+readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12,<3.14"
 dependencies = [
