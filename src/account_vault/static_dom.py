@@ -275,6 +275,18 @@ class StaticBrowser:
             current = current.parent
         return False
 
+    def _text_without(self, element: Element, skip: Element) -> str:
+        # inner_text() with one subtree omitted. snapshot.js name() puts
+        # the named element in its seen set, so a <label> wrapping (or
+        # pointing at) a field never contributes the field's own text --
+        # a textarea's default value, a select's options -- to the name.
+        if element is skip:
+            return ""
+        if element.text_override is not None:
+            return element.text_override
+        parts = [child if isinstance(child, str) else self._text_without(child, skip) for child in element.children]
+        return " ".join(" ".join(parts).split())
+
     def _name(self, element: Element) -> str:
         labelledby = element.get("aria-labelledby", "")
         if labelledby:
@@ -286,13 +298,13 @@ class StaticBrowser:
             return aria_label
         element_id = element.get("id")
         if element_id and element_id in self.labels_for:
-            text = self.labels_for[element_id].inner_text()
+            text = self._text_without(self.labels_for[element_id], element)
             if text:
                 return text
         current = element.parent
         while current is not None:
             if current.tag == "label":
-                text = current.inner_text()
+                text = self._text_without(current, element)
                 if text:
                     return text
                 break
@@ -303,7 +315,10 @@ class StaticBrowser:
         alt = element.get("alt")
         if alt:
             return alt
-        if element.tag != "input":
+        # Same DEVIATION as snapshot.js (upstream PR #246): a textarea's
+        # inner text is its default value, not its name; like INPUT it
+        # falls through to title/placeholder instead of its content.
+        if element.tag not in {"input", "textarea"}:
             text = element.inner_text()
             if text:
                 return text
