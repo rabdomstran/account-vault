@@ -49,6 +49,9 @@ jobs:
       - name: Ruff
         run: uv run ruff check .
 
+      - name: Ruff format
+        run: uv run ruff format --check .
+
       # -rs: print skip reasons so it is visible in the log that the
       # only skipped tests are the opt-in live-CDP pair.
       - name: Test
