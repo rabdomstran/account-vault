@@ -628,3 +628,38 @@ def test_refilling_a_field_with_new_values_is_not_a_cycle():
         runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
     assert runner.state["status"] == "ready"
     assert [h["text"] for h in runner.state["history"]] == ["Zurich", "Bern", "Lugano"]
+
+
+def test_covered_learning_does_not_spend_stale_strikes():
+    # Upstream PR #245 x the local stale-streak stop: a covered rejection
+    # executes nothing, so decision-layer suppressions (which learn only
+    # from history) never fire for it -- the snapshot learns instead, and
+    # each re-observe offers one fewer unhittable control. Counting those
+    # learning steps as stale strikes would block the run at three before
+    # a fourth, hittable alternative is ever offered (consent banners
+    # cover whole tables at once; #137 measured 33/33 on BBC News).
+    from account_vault.browser import CoveredTarget
+
+    runner = make_runner(page())
+    runner.decider.choose.return_value = decision("e3", node=20, operation="CLICK")
+    runner.state["browser"].act.side_effect = CoveredTarget("Target is covered. Observe again.")
+    rounds = {"n": 0}
+
+    def observe(**_kwargs):
+        rounds["n"] += 1
+        moved = page()
+        moved["text"] = f"offer {rounds['n']}"  # the covered node left the offer
+        moved["fingerprint"] = fingerprint(moved)
+        return moved
+
+    runner.state["browser"].observe.side_effect = observe
+    runner.state["status"] = "ready"
+    for _ in range(3):
+        runner.command("tick")
+    assert runner.state["status"] == "ready", "three covered learnings must not block the run"
+    assert runner.state["stale_streak"] == 0
+    assert runner.state["history"] == []  # still nothing executed
+    # A plain stale rejection (no new knowledge) still counts as before.
+    runner.state["browser"].act.side_effect = StalePage("target vanished")
+    runner.command("tick")
+    assert runner.state["stale_streak"] == 1

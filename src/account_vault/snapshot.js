@@ -4,12 +4,19 @@
 // coverage bugs; everything else is unchanged so behaviour stays comparable.
 (() => {
   if (!document.body) return null;
-  const cache = window.__jevFast ||= {ids:new WeakMap(), nodes:new Map(), next:1};
+  const cache = window.__jevFast ||= {ids:new WeakMap(), nodes:new Map(), next:1, covered:new Set()};
+  // A cache minted by an older snapshot in this same document has no
+  // covered set yet; the act resolver in browser.py records into it.
+  if (!cache.covered) cache.covered=new Set();
   const identity = e => {
     if (!cache.ids.has(e)) cache.ids.set(e,cache.next++);
     const id=cache.ids.get(e); cache.nodes.set(id,e); return id;
   };
-  for (const [id,e] of cache.nodes) if (!e.isConnected) cache.nodes.delete(id);
+  for (const [id,e] of cache.nodes) if (!e.isConnected) {
+    cache.nodes.delete(id); cache.covered.delete(id);
+  }
+  // The act guard's own hit test, shared so offer and execution agree.
+  cache.hits=(e,x,y)=>e.contains(document.elementFromPoint(x,y));
   const safe = e => !['password','file','hidden'].includes(e.type);
   const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
@@ -134,12 +141,28 @@
   const semantics=actions.map(({rect,...action})=>action);
   const marker=[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
     document.title,text,semantics,page_key[6]];
-  const omitted_actions=Math.max(0,actions.length-250);
-  actions.splice(250);
-  actions.forEach((a,i)=>a.id='e'+(i+1));
-  if (scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
-  if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
-  actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
+  // DEVIATION: stop reoffering a control the act guard already refused as
+  // covered (upstream PR #245). Only previously rejected nodes are
+  // rechecked -- one hit test each, at this snapshot's fresh rect -- and a
+  // node is reoffered as soon as its centre is hittable again. Filtering
+  // happens after the marker above is built from the full semantics:
+  // occlusion is geometry, and the marker deliberately compares meaning
+  // and identity only, so covering a control never reads as a page change.
+  let offered=actions;
+  if (cache.covered.size) {
+    const checked=new Set();
+    for (const {node,rect:{x,y,w,h}} of actions) if (cache.covered.has(node) && !checked.has(node)) {
+      checked.add(node);
+      if (cache.hits(cache.nodes.get(node),x+w/2,y+h/2)) cache.covered.delete(node);
+    }
+    offered=actions.filter(a=>!cache.covered.has(a.node));
+  }
+  const omitted_actions=Math.max(0,offered.length-250);
+  offered.splice(250);
+  offered.forEach((a,i)=>a.id='e'+(i+1));
+  if (scrollY+innerHeight<height-2) offered.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
+  if (scrollY>0) offered.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
+  offered.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
-    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};
+    scroll:{y:scrollY,height},actions:offered,marker,page_key,guards,omitted_actions};
 })()

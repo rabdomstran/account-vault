@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, Protocol, Self
 
-from .browser import CdpBrowser, StalePage
+from .browser import CdpBrowser, CoveredTarget, StalePage
 from .model import MissingValueError, SystemOneDecider, action_space, field_context, field_text
 from .questions import CYCLE_WINDOW, MAX_ACTIONS, MAX_DECISIONS, MAX_NO_PROGRESS
 from .settings import Settings, load_settings
@@ -274,8 +274,26 @@ class Agent:
                 # execute before its post-action observation went stale
                 # is progress, not a strike.
                 executed = len(state["history"]) > history_before
-                state["stale_streak"] = 0 if executed else state.get("stale_streak", 0) + 1
+                fingerprint_before = state["page"]["fingerprint"]
                 self._refresh()
+                # DEVIATION: a covered rejection (#245) that changed the
+                # offered set is knowledge progress, not a stale strike:
+                # the snapshot just learned to omit an unhittable node,
+                # and counting it would block runs that need more than
+                # max_stale_decisions learning steps (whole tables sit
+                # under consent banners; #137) before a hittable
+                # runner-up is ever offered. Decision-layer drops cannot
+                # learn this case at all -- nothing executed, so nothing
+                # enters history. The model-call budget still bounds it.
+                learned_covered = (
+                    isinstance(error, CoveredTarget) and state["page"]["fingerprint"] != fingerprint_before
+                )
+                if executed:
+                    state["stale_streak"] = 0
+                elif learned_covered:
+                    state["stale_streak"] = state.get("stale_streak", 0)
+                else:
+                    state["stale_streak"] = state.get("stale_streak", 0) + 1
                 state["elapsed_ms"] = self._elapsed(state)
                 if state["stale_streak"] >= self.max_stale_decisions:
                     state["status"] = "blocked"
