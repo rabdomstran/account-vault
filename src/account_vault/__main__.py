@@ -67,8 +67,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Run the perceive-decide-act loop on a static HTML file.")
     parser.add_argument("--html", default=str(DEFAULT_HTML), help="Static HTML file to drive")
     parser.add_argument("--goal", default=DEFAULT_GOAL)
-    parser.add_argument("--fill", action="append", default=[], metavar="LABEL=VALUE",
-                        help="Field value for the offline text provider (repeatable)")
+    parser.add_argument(
+        "--fill",
+        action="append",
+        default=[],
+        metavar="LABEL=VALUE",
+        help="Field value for the offline text provider (repeatable)",
+    )
     parser.add_argument("--select", action="append", default=[], help="Select-option label fragment (repeatable)")
     parser.add_argument("--check", action="append", default=[], help="Checkbox label fragment (repeatable)")
     parser.add_argument("--click", action="append", default=[], help="Submit/control label fragment (repeatable)")
@@ -105,12 +110,16 @@ def main(argv=None):
         for state in agent.run():
             last = state["history"][-1] if state["history"] else {}
             detail = f" -> {last['text']!r}" if last.get("text") else ""
-            print(f"{state['elapsed_ms']:>5} ms  step {len(state['history']):>2}  "
-                  f"{last.get('operation', '-')} {last.get('action', '')}{detail}  [{state['status']}]")
+            print(
+                f"{state['elapsed_ms']:>5} ms  step {len(state['history']):>2}  "
+                f"{last.get('operation', '-')} {last.get('action', '')}{detail}  [{state['status']}]"
+            )
         result = verify(state["page"], expect)
         reason = f"  reason={state['blocked_reason']}" if state.get("blocked_reason") else ""
-        print(f"final  status={state['status']}  decisions={len(state['decisions'])}  "
-              f"text_calls={len(state['text_calls'])}{reason}")
+        print(
+            f"final  status={state['status']}  decisions={len(state['decisions'])}  "
+            f"text_calls={len(state['text_calls'])}{reason}"
+        )
         print(json.dumps({"verification": result}, indent=2))
     if state["status"] != "done" or not result["passed"]:
         raise SystemExit("Static run did not satisfy the independent checks")

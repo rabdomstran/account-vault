@@ -27,7 +27,9 @@ def page(actions=None):
         "title": "Search",
         "text": "Search",
         "scroll": {"y": 0},
-        "actions": actions if actions is not None else [
+        "actions": actions
+        if actions is not None
+        else [
             {"id": "e1", "kind": "fill", "label": "Search", "role": "textbox", "value": "", "node": 10},
             {"id": "e3", "kind": "click", "label": "Go", "role": "button", "value": "", "node": 20},
             {"id": "wait", "kind": "wait", "label": "Wait"},
@@ -104,6 +106,7 @@ def stub_client(monkeypatch, response):
 
 # --- upstream issue #158: HTTP 200 with an error body is not success ------
 
+
 def test_post_json_rejects_error_body_in_http_200(monkeypatch):
     stub_client(monkeypatch, FakeResponse({"id": "gen-1", "error": {"message": "Upstream idle timeout", "code": 504}}))
     with pytest.raises(model.ModelError, match="no action executed"):
@@ -112,6 +115,7 @@ def test_post_json_rejects_error_body_in_http_200(monkeypatch):
 
 # --- upstream issue #87: invalid JSON must not leak a decoder error -------
 
+
 def test_post_json_rejects_non_json_body(monkeypatch):
     stub_client(monkeypatch, FakeResponse(json_error=True))
     with pytest.raises(model.ModelError, match="invalid JSON"):
@@ -119,6 +123,7 @@ def test_post_json_rejects_non_json_body(monkeypatch):
 
 
 # --- upstream issue #133: off-envelope 200 must not raise raw KeyError ----
+
 
 def test_choose_rejects_off_envelope_response(monkeypatch):
     monkeypatch.setattr(model, "post_json", Mock(return_value={"unexpected": True}))
@@ -135,8 +140,12 @@ def test_choose_uses_configured_endpoint_not_hardcoded_host(monkeypatch):
         raise model.ModelError("stop here")
 
     monkeypatch.setattr(model, "post_json", post)
-    settings = Settings(systemone_base_url="https://gateway.test", systemone_path="/v1/evaluate",
-                        systemone_api_key="gw-key", text_model_api_key="t")
+    settings = Settings(
+        systemone_base_url="https://gateway.test",
+        systemone_path="/v1/evaluate",
+        systemone_api_key="gw-key",
+        text_model_api_key="t",
+    )
     with pytest.raises(model.ModelError):
         model.choose(page(), "goal", [], settings=settings)
     assert seen == {"url": "https://gateway.test/v1/evaluate", "key": "gw-key"}
@@ -144,9 +153,9 @@ def test_choose_uses_configured_endpoint_not_hardcoded_host(monkeypatch):
 
 # --- upstream issue #203: {"text": null} is "missing", not malformed ------
 
+
 def test_text_null_is_missing_value_not_malformed(monkeypatch):
-    monkeypatch.setattr(model, "post_json",
-                        Mock(return_value={"choices": [{"message": {"content": '{"text":null}'}}]}))
+    monkeypatch.setattr(model, "post_json", Mock(return_value={"choices": [{"message": {"content": '{"text":null}'}}]}))
     with pytest.raises(model.MissingValueError, match="nothing typed"):
         model.field_text({"goal": "g"}, settings=SETTINGS, attempts=3)
 
@@ -163,11 +172,14 @@ def test_missing_value_blocks_instead_of_crashing():
 
 # --- upstream issue #157: retry transient text-helper failures ------------
 
+
 def test_text_helper_retries_and_strips_markdown_fence(monkeypatch):
-    post = Mock(side_effect=[
-        {"choices": [{"message": {"content": "not json"}}]},
-        {"choices": [{"message": {"content": '```json\n{"text":"Zurich"}\n```'}}]},
-    ])
+    post = Mock(
+        side_effect=[
+            {"choices": [{"message": {"content": "not json"}}]},
+            {"choices": [{"message": {"content": '```json\n{"text":"Zurich"}\n```'}}]},
+        ]
+    )
     monkeypatch.setattr(model, "post_json", post)
     value, helper = model.field_text({"goal": "g"}, settings=SETTINGS, attempts=3)
     assert value == "Zurich"
@@ -176,12 +188,25 @@ def test_text_helper_retries_and_strips_markdown_fence(monkeypatch):
 
 # --- upstream issues #191/#198/#202: element identity in helper + cache ---
 
+
 def test_field_context_distinguishes_same_labeled_fields():
     p = page()
-    shipping = {"label": "Street Address", "role": "textbox", "value": "", "node": 41,
-                "dom_id": "ship-street", "scope": "Shipping address"}
-    billing = {"label": "Street Address", "role": "textbox", "value": "", "node": 77,
-               "dom_id": "bill-street", "scope": "Billing address"}
+    shipping = {
+        "label": "Street Address",
+        "role": "textbox",
+        "value": "",
+        "node": 41,
+        "dom_id": "ship-street",
+        "scope": "Shipping address",
+    }
+    billing = {
+        "label": "Street Address",
+        "role": "textbox",
+        "value": "",
+        "node": 77,
+        "dom_id": "bill-street",
+        "scope": "Billing address",
+    }
     a = model.field_context("g", shipping, p, [])
     b = model.field_context("g", billing, p, [])
     assert a != b
@@ -210,6 +235,7 @@ def test_cached_text_is_not_reused_for_a_different_node(monkeypatch):
 
 # --- upstream issue #132: positional id alone must not select a control --
 
+
 def test_stale_id_with_wrong_node_never_acts():
     p = page()
     runner = make_runner(p)
@@ -221,6 +247,7 @@ def test_stale_id_with_wrong_node_never_acts():
 
 
 # --- upstream issue #94: page_changed=None must not disable the stop -----
+
 
 def test_failed_observation_still_counts_toward_no_progress_stop():
     p = page()
@@ -240,6 +267,7 @@ def test_failed_observation_still_counts_toward_no_progress_stop():
 
 # --- upstream issue #1: empty first observation retries, not BLOCKED -----
 
+
 def test_empty_observation_is_retried_before_deciding():
     empty = page([{"id": "wait", "kind": "wait", "label": "Wait"}])
     full = page()
@@ -249,8 +277,10 @@ def test_empty_observation_is_retried_before_deciding():
     decider = Mock()
     decider.validate.return_value = None
     agent = loop.Agent(
-        "https://example.test/", "goal",
-        browser=browser, decider=decider,
+        "https://example.test/",
+        "goal",
+        browser=browser,
+        decider=decider,
         text_provider=Mock(return_value=("x", {"model": "t", "latency_ms": 0})),
         settings=SETTINGS,
     )
@@ -259,6 +289,7 @@ def test_empty_observation_is_retried_before_deciding():
 
 
 # --- upstream issue #120: confidence gate for ordinary actions -----------
+
 
 def test_low_confidence_decision_is_not_executed():
     p = page()
@@ -276,6 +307,7 @@ def test_low_confidence_decision_is_not_executed():
 
 # --- upstream issue #55: both budgets are named ---------------------------
 
+
 def test_model_call_budget_error_names_the_limit():
     from account_vault.questions import MAX_DECISIONS
 
@@ -288,6 +320,7 @@ def test_model_call_budget_error_names_the_limit():
 
 
 # --- upstream issue #217: dotenv parsing strips quotes/comments -----------
+
 
 def test_dotenv_values_are_parsed_not_raw(tmp_path, monkeypatch):
     monkeypatch.delenv("SYSTEMONE_API_KEY", raising=False)
@@ -328,8 +361,7 @@ class StubDecider:
 
 
 def static_agent(decider):
-    return loop.Agent(FIXTURE, "goal", decider=decider,
-                      text_provider=model.MappingTextProvider(FILLS))
+    return loop.Agent(FIXTURE, "goal", decider=decider, text_provider=model.MappingTextProvider(FILLS))
 
 
 def test_repeated_missing_target_blocks_without_spending_budget():
@@ -345,8 +377,7 @@ def test_repeated_missing_target_blocks_without_spending_budget():
 
 
 def test_single_stale_decision_recovers():
-    answers = [decision("e999", node=999, operation="CLICK"),
-               decision("BLOCKED", node=None, operation="BLOCKED")]
+    answers = [decision("e999", node=999, operation="CLICK"), decision("BLOCKED", node=None, operation="BLOCKED")]
     decider = StubDecider(lambda s, g, h: answers.pop(0))
     with static_agent(decider) as agent:
         first = agent.command("tick")

@@ -178,6 +178,7 @@ def test_js_rendered_fixture_is_an_honest_static_boundary():
 # CHANGES the page, so page-unchanged stops can never fire. Before the
 # fix this burned all 60 actions bouncing catalog <-> catalog_design.
 
+
 class CycleDecider:
     def validate(self):
         return None
@@ -186,17 +187,29 @@ class CycleDecider:
         want = "All stays" if "catalog_design" in state["url"] else "Design stays"
         for a in state["actions"]:
             if a["kind"] == "click" and a["label"] == want:
-                return {"choice": a["id"], "node": a.get("node"), "operation": "CLICK",
-                        "target": "1", "confidence": 1.0, "probabilities": {a["id"]: 1.0},
-                        "operation_probabilities": {"CLICK": 1.0}, "target_probabilities": {},
-                        "target_confidence": None, "raw_answers": {}, "model": "cycle-stub",
-                        "usage": {}, "latency_ms": 0, "request": {}}
+                return {
+                    "choice": a["id"],
+                    "node": a.get("node"),
+                    "operation": "CLICK",
+                    "target": "1",
+                    "confidence": 1.0,
+                    "probabilities": {a["id"]: 1.0},
+                    "operation_probabilities": {"CLICK": 1.0},
+                    "target_probabilities": {},
+                    "target_confidence": None,
+                    "raw_answers": {},
+                    "model": "cycle-stub",
+                    "usage": {},
+                    "latency_ms": 0,
+                    "request": {},
+                }
         raise AssertionError(f"no {want!r} link on {state['url']}")
 
 
 def test_page_changing_cycle_blocks_instead_of_burning_action_budget():
-    with Agent(str(CATALOG), "Browse categories", decider=CycleDecider(),
-               text_provider=MappingTextProvider({})) as agent:
+    with Agent(
+        str(CATALOG), "Browse categories", decider=CycleDecider(), text_provider=MappingTextProvider({})
+    ) as agent:
         list(agent.run())
         assert agent.state["status"] == "blocked"
         assert "cycle" in agent.state["blocked_reason"].lower()

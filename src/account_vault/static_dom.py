@@ -27,8 +27,21 @@ from .browser import StalePage, fingerprint
 
 VOID = {"input", "br", "img", "hr", "meta", "link", "area", "base", "col", "embed", "source", "track", "wbr"}
 ROLES = {
-    "button", "link", "checkbox", "radio", "switch", "tab", "menuitem", "menuitemradio",
-    "option", "gridcell", "combobox", "textbox", "searchbox", "spinbutton", "slider",
+    "button",
+    "link",
+    "checkbox",
+    "radio",
+    "switch",
+    "tab",
+    "menuitem",
+    "menuitemradio",
+    "option",
+    "gridcell",
+    "combobox",
+    "textbox",
+    "searchbox",
+    "spinbutton",
+    "slider",
 }
 SAFE_EXCLUDE = {"password", "file", "hidden"}
 
@@ -278,13 +291,21 @@ class StaticBrowser:
         has_value = element.tag in {"input", "textarea", "select"} or "contenteditable" in element.attrs
         scope = self._scope_text(element) or (element.parent.inner_text()[:6000] if element.parent else "")
         return [
-            element.node, self._role(element), self._name(element),
+            element.node,
+            self._role(element),
+            self._name(element),
             self._value(element) if has_value else None,
             element.checked if element.tag == "input" else None,
             element.selected_index if element.tag == "select" else None,
-            "readonly" in element.attrs, self._disabled(element), element.get("aria-disabled"),
-            element.get("aria-expanded"), element.get("aria-checked"), element.get("aria-selected"),
-            element.get("href"), scope, len(options),
+            "readonly" in element.attrs,
+            self._disabled(element),
+            element.get("aria-disabled"),
+            element.get("aria-expanded"),
+            element.get("aria-checked"),
+            element.get("aria-selected"),
+            element.get("href"),
+            scope,
+            len(options),
         ]
 
     def _build(self):
@@ -307,8 +328,7 @@ class StaticBrowser:
             if role is None:
                 continue
             nested_button = any(
-                e.tag == "button" or e.get("role") == "button"
-                for e in self._walk(element) if e is not element
+                e.tag == "button" or e.get("role") == "button" for e in self._walk(element) if e is not element
             )
             if role == "gridcell" and nested_button:
                 continue
@@ -336,18 +356,24 @@ class StaticBrowser:
                 for option_index, option in enumerate(options):
                     if option_index == element.selected_index or "disabled" in option.attrs:
                         continue
-                    actions.append({
-                        **base, "kind": "select",
-                        "value": option.get("value", option.inner_text()),
-                        "option_index": option_index,
-                        "current_value": current,
-                        "label": f"{base['label']} → {option.inner_text()}",
-                    })
+                    actions.append(
+                        {
+                            **base,
+                            "kind": "select",
+                            "value": option.get("value", option.inner_text()),
+                            "option_index": option_index,
+                            "current_value": current,
+                            "label": f"{base['label']} → {option.inner_text()}",
+                        }
+                    )
             else:
                 editable = (
-                    "readonly" not in element.attrs and element.get("aria-readonly") != "true"
-                    and (role in {"textbox", "searchbox", "spinbutton", "slider"}
-                         or (role == "combobox" and element.tag in {"input", "textarea"}))
+                    "readonly" not in element.attrs
+                    and element.get("aria-readonly") != "true"
+                    and (
+                        role in {"textbox", "searchbox", "spinbutton", "slider"}
+                        or (role == "combobox" and element.tag in {"input", "textarea"})
+                    )
                 )
                 value = self._value(element)
                 actions.append({**base, "kind": "fill" if editable else "click", "value": value})
@@ -367,11 +393,14 @@ class StaticBrowser:
                     words.append(" ".join(child.split()))
                     length += len(child)
         text = "\n".join(words)[:6000]
-        page_key = [self.url, [
-            [e.node, self._value(e), e.checked, e.selected_index, "disabled" in e.attrs, "readonly" in e.attrs]
-            for e in self._walk(self.root)
-            if e.tag in {"input", "textarea", "select"} and e.get("type", "").lower() not in SAFE_EXCLUDE
-        ]]
+        page_key = [
+            self.url,
+            [
+                [e.node, self._value(e), e.checked, e.selected_index, "disabled" in e.attrs, "readonly" in e.attrs]
+                for e in self._walk(self.root)
+                if e.tag in {"input", "textarea", "select"} and e.get("type", "").lower() not in SAFE_EXCLUDE
+            ],
+        ]
         guards = {}
         for action in actions:
             if str(action["node"]) not in guards:
@@ -384,9 +413,17 @@ class StaticBrowser:
             action["id"] = f"e{index + 1}"
         actions.append({"id": "wait", "kind": "wait", "label": "Wait for the page to update"})
         page = {
-            "url": self.url, "title": self.title, "w": 1120, "h": 780, "text": text,
-            "scroll": {"y": 0, "height": 780}, "actions": actions,
-            "marker": marker, "page_key": page_key, "guards": guards, "omitted_actions": omitted,
+            "url": self.url,
+            "title": self.title,
+            "w": 1120,
+            "h": 780,
+            "text": text,
+            "scroll": {"y": 0, "height": 780},
+            "actions": actions,
+            "marker": marker,
+            "page_key": page_key,
+            "guards": guards,
+            "omitted_actions": omitted,
         }
         page["fingerprint"] = fingerprint(page)
         return page

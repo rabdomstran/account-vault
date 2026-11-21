@@ -189,9 +189,7 @@ class Agent:
                 state["elapsed_ms"] = self._elapsed(state)
                 if state["stale_streak"] >= self.max_stale_decisions:
                     state["status"] = "blocked"
-                    state["blocked_reason"] = (
-                        f"{state['stale_streak']} consecutive decisions never executed: {error}"
-                    )
+                    state["blocked_reason"] = f"{state['stale_streak']} consecutive decisions never executed: {error}"
                 else:
                     state["status"] = "ready"
                 return self.snapshot()
@@ -270,7 +268,8 @@ class Agent:
             expected_node = decision.get("node")
             action = next(
                 (
-                    a for a in page["actions"]
+                    a
+                    for a in page["actions"]
                     if a["id"] == selected and (expected_node is None or a.get("node") == expected_node)
                 ),
                 None,
@@ -353,9 +352,8 @@ class Agent:
             # no-progress stop forever and a stalled run keeps spending
             # model calls (upstream issue #94). None means "no observed
             # progress" and counts toward the stop, like False.
-            no_progress = (
-                len(repeated) == 3
-                and all(h["page_changed"] in (False, None) and h["kind"] != "wait" for h in repeated)
+            no_progress = len(repeated) == 3 and all(
+                h["page_changed"] in (False, None) and h["kind"] != "wait" for h in repeated
             )
             state["status"] = "blocked" if no_progress else "ready"
             if no_progress:

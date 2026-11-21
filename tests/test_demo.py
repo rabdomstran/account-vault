@@ -81,9 +81,9 @@ def test_post_requires_demo_token():
 
 def test_offline_reset_and_ticks_drive_the_loop_to_done():
     goal = "Find a Design stay in Lisbon with Free cancellation and open Casa Flora."
-    status, body = request("POST", "/api/reset",
-                           {"scenario": "travel", "mode": "offline", "goal": goal},
-                           token=demo.TOKEN)
+    status, body = request(
+        "POST", "/api/reset", {"scenario": "travel", "mode": "offline", "goal": goal}, token=demo.TOKEN
+    )
     assert status == 200
     state = json.loads(body)
     assert state["status"] == "ready" and state["mode"] == "offline"
@@ -131,8 +131,7 @@ def test_inspector_serves_over_a_real_socket():
 
         # Untokened POSTs are refused over the wire too.
         payload = json.dumps({"scenario": "travel", "mode": "offline", "goal": "x"})
-        connection.request("POST", "/api/reset", body=payload,
-                           headers={"Content-Type": "application/json"})
+        connection.request("POST", "/api/reset", body=payload, headers={"Content-Type": "application/json"})
         response = connection.getresponse()
         response.read()
         assert response.status == 403
@@ -145,9 +144,9 @@ def test_inspector_serves_over_a_real_socket():
 
 
 def test_offline_flights_is_rejected_and_state_endpoint_reports_budget():
-    status, body = request("POST", "/api/reset",
-                           {"scenario": "flights", "mode": "offline", "goal": "x"},
-                           token=demo.TOKEN)
+    status, body = request(
+        "POST", "/api/reset", {"scenario": "flights", "mode": "offline", "goal": "x"}, token=demo.TOKEN
+    )
     assert status == 400 and "live mode" in json.loads(body)["error"]
     status, body = request("GET", "/api/state")
     assert status == 200

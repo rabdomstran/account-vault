@@ -57,17 +57,24 @@ def dedicated_chrome():
     os.environ["BU_CDP_URL"] = f"http://127.0.0.1:{PORT}"
     os.environ["BU_NAME"] = NAME
     chrome = subprocess.Popen(
-        [_chrome(), "--headless=new", f"--remote-debugging-port={PORT}",
-         f"--user-data-dir={PROFILE}", "--no-first-run", "--disable-gpu",
-         "--window-size=1120,780", "about:blank"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        [
+            _chrome(),
+            "--headless=new",
+            f"--remote-debugging-port={PORT}",
+            f"--user-data-dir={PROFILE}",
+            "--no-first-run",
+            "--disable-gpu",
+            "--window-size=1120,780",
+            "about:blank",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     try:
         deadline = time.time() + 30
         while time.time() < deadline:
             try:
-                version = json.loads(urllib.request.urlopen(
-                    f"http://127.0.0.1:{PORT}/json/version", timeout=2).read())
+                version = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/version", timeout=2).read())
                 if version.get("webSocketDebuggerUrl"):
                     break
             except Exception:
@@ -131,9 +138,13 @@ def test_live_loop_drives_fixture_to_done(dedicated_chrome):
         done_when=lambda page: "Free cancellation included" in page["text"],
     )
     browser = CdpBrowser(url)
-    with Agent(url, "Find a Design stay in Lisbon with Free cancellation and open Casa Flora.",
-               browser=browser, decider=decider,
-               text_provider=MappingTextProvider({"destination": "Lisbon"})) as agent:
+    with Agent(
+        url,
+        "Find a Design stay in Lisbon with Free cancellation and open Casa Flora.",
+        browser=browser,
+        decider=decider,
+        text_provider=MappingTextProvider({"destination": "Lisbon"}),
+    ) as agent:
         list(agent.run())
         assert agent.state["status"] == "done"
         page = agent.browser.observe(screenshot=False)

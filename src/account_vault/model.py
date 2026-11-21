@@ -372,8 +372,13 @@ class HeuristicDecider:
     """
 
     def __init__(
-        self, *, fill_labels=(), select_labels=(), check_labels=(),
-        click_labels=("Search", "Submit"), done_when=None,
+        self,
+        *,
+        fill_labels=(),
+        select_labels=(),
+        check_labels=(),
+        click_labels=("Search", "Submit"),
+        done_when=None,
     ):
         self.fill_labels = [label.lower() for label in fill_labels]
         self.select_labels = [label.lower() for label in select_labels]

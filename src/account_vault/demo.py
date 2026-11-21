@@ -73,8 +73,7 @@ def _offline_agent(scenario, goal):
             click_labels=("browser is a choice",),
             done_when=lambda page: "finite vocabulary" in page["text"],
         )
-        return Agent(str(catalog), goal, decider=decider,
-                     text_provider=MappingTextProvider({}))
+        return Agent(str(catalog), goal, decider=decider, text_provider=MappingTextProvider({}))
     decider = HeuristicDecider(
         fill_labels=("destination", "arrive", "gift note"),
         select_labels=("design",),
@@ -83,8 +82,7 @@ def _offline_agent(scenario, goal):
         done_when=lambda page: "Free cancellation included" in page["text"],
     )
     fills = {"destination": "Lisbon", "arrive": "2027-03-01", "gift note": "Quiet room please"}
-    return Agent(str(catalog), goal, decider=decider,
-                 text_provider=MappingTextProvider(fills))
+    return Agent(str(catalog), goal, decider=decider, text_provider=MappingTextProvider(fills))
 
 
 def command(name, body):
