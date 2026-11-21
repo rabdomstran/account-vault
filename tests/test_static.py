@@ -31,6 +31,39 @@ def test_bare_contenteditable_is_enumerated():
     assert notes["kind"] == "fill" and notes["role"] == "textbox"
 
 
+def test_textarea_is_not_named_by_its_default_text():
+    # Upstream PR #246: a textarea's child text is its default value, not
+    # its name. Only INPUT was excluded from child-text naming, so an
+    # unlabeled prefilled textarea was labelled by stale (possibly
+    # template-sized) content and title/placeholder never applied; the
+    # label then disagreed with the value after any edit. aria-label and
+    # <label> keep precedence; with nothing else the role name applies.
+    markup = """<html><head><title>t</title></head><body><form>
+      <textarea name="msg" placeholder="Message">Default draft text</textarea>
+      <textarea name="titled" title="Your notes">Prefilled notes</textarea>
+      <label>Comment <textarea name="wrapped">Draft comment</textarea></label>
+      <label for="bio">Bio</label><textarea id="bio" name="bio">Draft bio</textarea>
+      <textarea name="bare">Just a draft</textarea>
+      <textarea name="aria" aria-label="Compose">Draft</textarea>
+    </form></body></html>"""
+    page = StaticBrowser.from_html(markup).observe()
+    by_name: dict[str, set[str]] = {}
+    for action in page["actions"]:
+        if action.get("name"):
+            by_name.setdefault(action["name"], set()).add(action["label"])
+    assert by_name == {
+        "aria": {"Compose", "Open Compose"},
+        "bare": {"Open textbox", "textbox"},
+        "bio": {"Bio", "Open Bio"},
+        "msg": {"Message", "Open Message"},
+        "titled": {"Open Your notes", "Your notes"},
+        "wrapped": {"Comment", "Open Comment"},
+    }
+    # The content is still the field's value -- only its naming changed.
+    msg = next(a for a in page["actions"] if a.get("name") == "msg" and a["kind"] == "fill")
+    assert msg["value"] == "Default draft text"
+
+
 def test_all_native_value_types_reach_the_table():
     markup = """<html><head><title>t</title></head><body><form>
       <label>When <input type="time" name="t"></label>

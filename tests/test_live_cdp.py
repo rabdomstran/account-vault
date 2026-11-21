@@ -318,6 +318,37 @@ def test_live_native_fills_commit_and_rejects_loudly(dedicated_chrome):
         browser.close()
 
 
+# --- upstream PR #246: a textarea's default text is not its name ----------
+# snapshot.js name() fell back to child text for everything but INPUT, so
+# an unlabeled prefilled textarea was labelled by its initial content
+# ("Default draft text" below) and kept that stale label after editing,
+# while placeholder/title never applied. Same shape as upstream's
+# check_guards regression: name by placeholder, before and after an edit.
+
+
+def test_live_textarea_is_named_by_placeholder_not_its_default_text(dedicated_chrome):
+    from urllib.parse import quote
+
+    from account_vault.browser import CdpBrowser
+
+    html = (
+        '<!doctype html><title>Compose</title><form><textarea id="message" '
+        'placeholder="Message">Default draft text</textarea></form>'
+    )
+    browser = CdpBrowser("data:text/html," + quote(html))
+    try:
+        page = browser.observe(screenshot=False)
+        labels = {a["label"] for a in page["actions"] if a.get("value") == "Default draft text"}
+        assert labels == {"Message", "Open Message"}
+
+        browser.evaluate("document.querySelector('#message').value='Edited by the user'")
+        page = browser.observe(screenshot=False)
+        labels = {a["label"] for a in page["actions"] if a.get("value") == "Edited by the user"}
+        assert labels == {"Message", "Open Message"}
+    finally:
+        browser.close()
+
+
 def test_live_agent_recovers_from_a_covered_top_choice(dedicated_chrome):
     # The run-level case the decision layer misses: the decider's top
     # choice is covered, a hittable runner-up completes the goal. Without
