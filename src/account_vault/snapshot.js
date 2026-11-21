@@ -20,6 +20,13 @@
   const safe = e => !['password','file','hidden'].includes(e.type);
   const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+  // A control the main pass drops for having no hittable box of its own
+  // (0x0 / opacity:0). Component libraries hide native radios/checkboxes
+  // this way inside a visible label (upstream issue #23, AntD comment).
+  const concealed = e => {
+    const r=e.getBoundingClientRect();
+    return r.width<=0 || r.height<=0 || !visible(e);
+  };
   const name = (e,seen=new Set()) => {
     if (!e || seen.has(e)) return '';
     seen.add(e);
@@ -74,6 +81,16 @@
     }
     // DEVIATION (issue #23): a clickable non-native element with a handler.
     if (e.hasAttribute && e.hasAttribute('onclick')) return 'button';
+    // DEVIATION (issue #23): keep guard() honest for second-pass targets
+    // below -- a JS-assigned handler or explicit tab stop, and a label
+    // standing in for its concealed radio/checkbox (role + checked come
+    // from the input; clicking the label toggles it natively).
+    if (typeof e.onclick === 'function' || e.tabIndex >= 0) return 'button';
+    if (e.tagName === 'LABEL') {
+      const inner=e.querySelector('input[type="radio"],input[type="checkbox"]') ||
+        (e.htmlFor ? document.getElementById(e.htmlFor) : null);
+      if (inner && ['radio','checkbox'].includes(inner.type) && concealed(inner)) return inner.type;
+    }
     return null;
   };
   cache.pageKey=()=>[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
@@ -88,6 +105,7 @@
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
   const actions=[];
+  const collected=new Set(), collectedEls=new Set();
   for (const e of document.querySelectorAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
@@ -100,6 +118,7 @@
     const scopeEl=e.closest('form,fieldset,dialog,[role="dialog"],article,li,tr,[role="row"]');
     const base={node:identity(e),role:rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
+    collected.add(base.node); collectedEls.add(e);
     if (e.tagName==='INPUT' && e.type) base.input_type=e.type;
     if (e.id) base.dom_id=e.id;
     if (e.getAttribute && e.getAttribute('name')) base.name=e.getAttribute('name');
@@ -128,6 +147,105 @@
       actions.push({...base,kind:editable?'fill':'click',value});
       if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
+  }
+  // DEVIATION (upstream issue #23, second half): the [onclick] rule above
+  // only reaches rows with an inline handler attribute. Rows wired with
+  // addEventListener, icon-only in-flow controls, and labels wrapping a
+  // concealed radio/checkbox stayed invisible and the loop retyped or
+  // blocked. This second pass stays narrow (the drift review's terms):
+  // click evidence + a usable label + list/overlay context unless the
+  // wiring or icon speaks for itself, innermost only, capped. Shapes
+  // follow upstream PRs #22/#24 plus the issue's two verified comments.
+  const NATIVEISH='a[href],button,input,textarea,select,summary,[contenteditable],[onclick]';
+  const iconName=e=>{
+    const svg=e.querySelector('svg');
+    if (!svg) return '';
+    const title=svg.querySelector('title')?.textContent?.trim();
+    if (title) return title.slice(0,120);
+    const aria=svg.getAttribute('aria-label')?.trim();
+    if (aria) return aria.slice(0,120);
+    if (svg.id) return svg.id.slice(0,120);
+    for (const token of (svg.getAttribute('class')||'').split(/\s+/)) {
+      const match=token.match(/icon-([a-z0-9-]+)$/i);
+      if (match) return match[1].slice(0,120);
+    }
+    return '';
+  };
+  const inOverlay=e=>{
+    let a=e.parentElement, depth=0;
+    while (a && depth++<8) {
+      const position=getComputedStyle(a).position;
+      if (position==='absolute' || position==='fixed') return true;
+      a=a.parentElement;
+    }
+    return false;
+  };
+  const pointerList=e=>{
+    const parent=e.parentElement;
+    if (!parent || !parent.matches('ul,ol,[role="list"],[role="listbox"],[role="menu"],[role="tablist"]'))
+      return false;
+    return [...parent.children].filter(k=>k!==e && k.tagName===e.tagName && visible(k) &&
+      getComputedStyle(k).cursor==='pointer').length>=2;
+  };
+  let extras=0;
+  // Labels standing in for a concealed radio/checkbox keep the input's
+  // role and checked state; the click lands on the label's hittable rect.
+  for (const e of document.querySelectorAll('input[type="radio"],input[type="checkbox"]')) {
+    if (extras>=40) break;
+    if (!safe(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]') || !concealed(e)) continue;
+    const label=[...(e.labels||[])].find(l=>visible(l) && !l.closest('[aria-disabled="true"]'));
+    if (!label) continue;
+    const r=label.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+    if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    const node=identity(label);
+    if (collected.has(node)) continue;
+    collected.add(node); collectedEls.add(label);
+    actions.push({node,role:e.type,label:name(label)||name(e)||e.type,
+      rect:{x:r.x,y:r.y,w:r.width,h:r.height},kind:'click',value:'',
+      checked:String(e.checked),input_type:e.type});
+    extras++;
+  }
+  const candidates=[];
+  let scanned=0;
+  for (const e of document.querySelectorAll('li,div,span,td,dd,p')) {
+    if (++scanned>5000 || candidates.length>=80) break;
+    if (!visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
+    if (e.matches(selector) || (e.parentElement && e.parentElement.closest(selector))) continue;
+    if (e.querySelector(NATIVEISH)) continue;
+    const pointer=getComputedStyle(e).cursor==='pointer';
+    const strong=typeof e.onclick==='function' || e.tabIndex>=0 ||
+      e.hasAttribute('data-clickable') || e.hasAttribute('data-action');
+    if (!pointer && !strong) continue;
+    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+    if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    const icon=iconName(e), label=name(e).trim().slice(0,120) || icon;
+    if (!label) continue;
+    const list=pointerList(e);
+    if (!strong && !icon && !list && !inOverlay(e)) continue;
+    candidates.push({e,label,list,strong,icon});
+  }
+  // A text span inside a clickable row inherits cursor:pointer and would
+  // otherwise split one row ("Beijing North" + "beijingbei") into two
+  // actions. Unless the inner element carries its own wiring/icon, the
+  // row speaks for its spans (its label already joins their text, and a
+  // click at its centre reaches the same handler).
+  const candidateEls=new Set(candidates.map(c=>c.e));
+  const rows=candidates.filter(c=>!(!c.strong && !c.icon && c.e.parentElement && candidateEls.has(c.e.parentElement)));
+  for (const {e,label,list} of rows) {
+    if (extras>=40) break;
+    if (rows.some(c=>c.e!==e && e.contains(c.e))) continue;
+    let inside=false;
+    for (const other of collectedEls) if (other.contains(e)) { inside=true; break; }
+    if (inside) continue;
+    const node=identity(e);
+    if (collected.has(node)) continue;
+    collected.add(node); collectedEls.add(e);
+    const r=e.getBoundingClientRect();
+    const extra={node,role:list?'option':'button',label,
+      rect:{x:r.x,y:r.y,w:r.width,h:r.height},kind:'click',value:''};
+    if (e.id) extra.dom_id=e.id;
+    actions.push(extra);
+    extras++;
   }
   const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
   const range=document.createRange(); let node,length=0;

@@ -268,7 +268,6 @@ NOT_A_FIX = {
 
 PARTIAL_NOTES = {
     16: "attach default fixed in code; SOCKS first-call crash remains (httpx lacks the socks extra)",
-    23: "[onclick] rows handled; non-onclick clickable rows remain (drift P1.9)",
     25: "decider object + base URL landed; wire shape still /v1/systemone",
     125: "local backend landed; no MCP stdio server",
     227: "enumeration in port notes; CDP native-commit landed later in code",
@@ -647,7 +646,7 @@ def resolve_status(
         notes.append(f"not a fix: {NOT_A_FIX[number]}")
         return "open", notes, False
     if in_code or in_port_fixed or in_drift_handled:
-        if number in PARTIAL_NOTES and number in (16, 23, 25, 125):
+        if number in PARTIAL_NOTES and number in (16, 25, 125):
             # Code covers the first half; the named residual is still open.
             return "partial", notes, False
         if number in PARTIAL_NOTES and not in_code:
