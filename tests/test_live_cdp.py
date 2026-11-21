@@ -444,7 +444,15 @@ def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome
         url, "Click the Deep target button", browser=browser, decider=decider, text_provider=MappingTextProvider({})
     ) as agent:
         list(agent.run())
-        assert agent.state["status"] == "done"
+        # Carry the run's own evidence in the message: which guard (or
+        # decider BLOCKED) ended it, what was offered, where the
+        # viewport actually was. A bare status assert gives a CI
+        # reader nothing to distinguish those apart.
+        diag = (
+            f"blocked_reason={agent.state.get('blocked_reason')!r} offered={decider.offered} "
+            f"scroll_seen={decider.scroll_seen} history={agent.state['history']}"
+        )
+        assert agent.state["status"] == "done", diag
         assert browser.evaluate("window.__clicks") == ["deep"]
         scrolls = [h for h in agent.state["history"] if h["kind"] == "scroll"]
         assert len(scrolls) >= 3  # several viewports down, not one
