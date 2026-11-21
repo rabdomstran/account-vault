@@ -22,7 +22,7 @@ runs end to end against a static HTML file today:
 ```bash
 uv run python -m account_vault   # offline demo on examples/hotel_search.html
 uv run account-vault-demo        # inspector UI on http://127.0.0.1:8766 (offline mode default)
-uv run pytest                    # 109 tests, no API keys (4 live-CDP tests are opt-in)
+uv run pytest                    # 138 tests, no API keys (6 live-CDP tests opt-in locally; CI gates on them headless)
 uv run python scripts/e2e_offline_demo.py  # end-to-end: CLI demo + inspector over HTTP
 ACCOUNT_VAULT_LIVE=1 uv run pytest tests/test_live_cdp.py  # real Chrome, dedicated profile
 ```
