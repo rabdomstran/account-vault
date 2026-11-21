@@ -20,23 +20,34 @@ uv run mypy                               # strict over src/account_vault
 uv run pytest -rs --cov=account_vault --cov-fail-under=89
 uv run python scripts/e2e_offline_demo.py # real loop + inspector, offline
 uv build                                  # wheel/sdist must ship static assets
+ACCOUNT_VAULT_LIVE=1 uv run pytest tests/test_live_cdp.py # if you touched the CDP path; CI gates on it
 ```
 
 CI (`.github/workflows/ci.yml`) additionally runs the suite on macOS
-and Python 3.13. A few scope notes, so nobody games a gate by accident:
+and Python 3.13, and the live CDP tests headless on Linux. A few scope
+notes, so nobody games a gate by accident:
 
 - **Coverage** measures `src/account_vault`; the floor (89%) sits just
   below the actual number. Don't raise it by excluding files — cover
   the code. Tests are outside mypy's scope (Mocks/monkeypatching by
   design) but fully inside ruff's.
-- **Skips are visible.** `pytest -rs` prints reasons. The only expected
-  skips are the two opt-in live-CDP tests. A new skip needs a reason a
-  reader can act on.
+- **Skips are visible.** Skip reasons print by default (`-rs` is in
+  `addopts`). In the default run the only expected skips are the six
+  live-CDP tests; the CI live job runs those for real. A new skip
+  needs a reason a reader can act on.
+- **pytest runs strict** (`[tool.pytest]` in `pyproject.toml`):
+  unregistered markers, duplicate parametrization IDs, and unknown
+  config keys are errors, and deprecation warnings fail the run.
+  Register new markers in that table.
 - **The socket test** (`test_demo.py`, marked `socket`) must pass on
   both Linux and macOS CI; it only skips where binds are forbidden.
-- **Live Chrome tests** are opt-in and manual:
+- **Live Chrome tests** (`tests/test_live_cdp.py`) are a required CI
+  gate (`live (headless Chrome)`, Linux): real headless Chrome, a
+  throwaway profile, `file:`/`data:` pages only — no network or keys.
+  Locally they stay opt-in:
   `ACCOUNT_VAULT_LIVE=1 uv run pytest tests/test_live_cdp.py` (run that
-  file standalone — see its docstring).
+  file standalone — see its docstring). Opted in with no Chrome
+  installed is a failure, not a skip, so the gate can't pass empty.
 
 Code scanning (CodeQL, `.github/workflows/codeql.yml`) runs on PRs,
 on pushes to `main`, and weekly. Treat new alerts like failing tests.

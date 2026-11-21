@@ -1,9 +1,12 @@
 """Live CDP exercise: real Chrome + harness daemon + CdpBrowser + Agent.
 
-Opt-in only (ACCOUNT_VAULT_LIVE=1): launches a dedicated throwaway
-Chrome profile on a debug port and an isolated harness daemon, so the
-user's real browser/profile are never touched. Run standalone, outside
-the sandbox (needs process launch + loopback sockets):
+Opt-in locally (ACCOUNT_VAULT_LIVE=1): launches a dedicated throwaway
+headless Chrome profile on a debug port and an isolated harness daemon,
+so the user's real browser/profile are never touched. CI runs this file
+as the `live (headless Chrome)` gate on ubuntu-latest (Chrome ships in
+the runner image; all pages are file:/data: URLs, so no network or API
+keys). Locally, run standalone, outside the sandbox (needs process
+launch + loopback sockets):
 
     ACCOUNT_VAULT_LIVE=1 .venv/bin/python -m pytest tests/test_live_cdp.py -q
 
@@ -18,6 +21,7 @@ exercised here is perceive/act/screenshot over CDP, not model quality).
 import base64
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -34,39 +38,54 @@ pytestmark = pytest.mark.skipif(
 
 PORT = 9333
 NAME = "account-vault-live"
-PROFILE = Path("/tmp/av-chrome-live-profile")
 FIXTURE = Path(__file__).resolve().parents[1] / "src" / "account_vault" / "static" / "fixture.html"
-CHROME_CANDIDATES = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-]
 
 
 def _chrome():
-    for candidate in CHROME_CANDIDATES:
-        if Path(candidate).exists():
+    # PATH first (CI images ship google-chrome there), then the install
+    # locations that are not on PATH (the macOS app bundle).
+    candidates = [
+        *[shutil.which(name) for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")],
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
             return candidate
-    pytest.skip("no Chrome/Chromium binary found for live CDP test")
+    # LIVE=1 is an explicit opt-in (the module skipif covers default
+    # runs): a missing browser is a broken environment, and as a skip
+    # it would let the CI live gate pass without running anything.
+    pytest.fail("no Chrome/Chromium binary found for live CDP test")
 
 
 @pytest.fixture(scope="module")
-def dedicated_chrome():
+def dedicated_chrome(tmp_path_factory):
     if "browser_harness.helpers" in sys.modules:
         pytest.skip("harness already imported under another daemon name; run this file standalone")
     os.environ["BU_CDP_URL"] = f"http://127.0.0.1:{PORT}"
     os.environ["BU_NAME"] = NAME
+    # Fresh profile per run: a fixed directory can outlive a killed
+    # Chrome and fail the next launch on its stale singleton lock.
+    profile = tmp_path_factory.mktemp("av-chrome-live-profile")
+    flags = [
+        "--headless=new",
+        f"--remote-debugging-port={PORT}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--disable-gpu",
+        "--window-size=1120,780",
+    ]
+    if sys.platform.startswith("linux"):
+        # CI runners restrict unprivileged user namespaces (Ubuntu
+        # 24.04 AppArmor), which Chrome's sandbox needs, and size
+        # /dev/shm for containers. This is a throwaway profile serving
+        # loopback-only test pages, so the sandbox buys nothing here.
+        # Product code never launches Chrome; it only attaches to a
+        # caller-launched dedicated instance.
+        flags += ["--no-sandbox", "--disable-dev-shm-usage"]
     chrome = subprocess.Popen(
-        [
-            _chrome(),
-            "--headless=new",
-            f"--remote-debugging-port={PORT}",
-            f"--user-data-dir={PROFILE}",
-            "--no-first-run",
-            "--disable-gpu",
-            "--window-size=1120,780",
-            "about:blank",
-        ],
+        [_chrome(), *flags, "about:blank"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -425,7 +444,28 @@ def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome
         url, "Click the Deep target button", browser=browser, decider=decider, text_provider=MappingTextProvider({})
     ) as agent:
         list(agent.run())
-        assert agent.state["status"] == "done"
+        # Carry the run's own evidence in the message: which guard (or
+        # decider BLOCKED) ended it, what was offered, where the
+        # viewport actually was. A bare status assert gives a CI
+        # reader nothing to distinguish those apart.
+        diag = (
+            f"blocked_reason={agent.state.get('blocked_reason')!r} offered={decider.offered} "
+            f"scroll_seen={decider.scroll_seen} history={agent.state['history']}"
+        )
+        if agent.state["status"] != "done":
+            # Failure-path probe: did the last wheel land late (observe
+            # read mid-animation) or never (input swallowed)? Poll the
+            # live scroll position and take one fresh observation.
+            poll = []
+            for _ in range(10):
+                poll.append(browser.evaluate("window.scrollY"))
+                time.sleep(0.1)
+            fresh_page = browser.observe(screenshot=False)
+            diag += (
+                f" poll_y={poll} viewport={browser.evaluate('[innerWidth, innerHeight]')} "
+                f"fresh_y={fresh_page['scroll']['y']} fresh_ids={[a['id'] for a in fresh_page['actions']]}"
+            )
+        assert agent.state["status"] == "done", diag
         assert browser.evaluate("window.__clicks") == ["deep"]
         scrolls = [h for h in agent.state["history"] if h["kind"] == "scroll"]
         assert len(scrolls) >= 3  # several viewports down, not one

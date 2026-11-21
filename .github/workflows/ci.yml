@@ -188,3 +188,41 @@ jobs:
       # unit suite stays green. See scripts/e2e_offline_demo.py.
       - name: Run offline demo end to end
         run: uv run python scripts/e2e_offline_demo.py
+
+  live:
+    name: live (headless Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.12.1"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: live
+
+      - name: Install dependencies
+        run: uv sync --locked --dev
+
+      # Real-browser coverage of the CDP path the offline suite fakes:
+      # perception of the JS-rendered fixture, native-input commits,
+      # covered-target recovery, multi-viewport scroll, screenshots.
+      # The runner image ships Chrome; the fixture launches it headless
+      # with a throwaway profile on a loopback debug port and drives
+      # only file:/data: pages (no network, no API keys, deciders are
+      # the offline doubles). A missing browser fails the fixture, so
+      # this gate cannot go green by skipping. Linux-only and one
+      # Python on purpose: what is exercised is Chrome/CDP behavior,
+      # already matrix-covered for OS/Python by the offline jobs.
+      # Run standalone: the harness binds its daemon name at import.
+      - name: Show Chrome version
+        run: google-chrome --version || chromium --version || chromium-browser --version
+
+      - name: Run live CDP tests
+        env:
+          ACCOUNT_VAULT_LIVE: "1"
+        run: uv run pytest -rs tests/test_live_cdp.py
