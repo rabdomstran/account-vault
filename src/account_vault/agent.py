@@ -10,20 +10,40 @@ every deliberate difference and the upstream issue behind it.
 import base64
 import json
 import time
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from typing import Any, Protocol, Self
 
 from .browser import CdpBrowser, StalePage
 from .model import MissingValueError, SystemOneDecider, action_space, field_context, field_text
 from .questions import MAX_ACTIONS, MAX_DECISIONS
-from .settings import load_settings
+from .settings import Settings, load_settings
 from .static_dom import StaticBrowser, is_static_source
 
+JsonDict = dict[str, Any]
 
-def _count_elements(page):
+
+class BrowserLike(Protocol):
+    """The browser contract both backends (CDP, static) implement."""
+
+    def observe(self, screenshot: bool = ...) -> JsonDict: ...
+    def fresh(self, page: JsonDict, action: JsonDict | None = ...) -> bool: ...
+    def act(self, action: JsonDict, page: JsonDict, text: str | None = ...) -> Any: ...
+    def close(self) -> None: ...
+
+
+class DeciderLike(Protocol):
+    def choose(self, state: JsonDict, goal: str, history: Sequence[JsonDict]) -> JsonDict: ...
+
+
+TextProvider = Callable[[JsonDict], tuple[str, JsonDict]]
+
+
+def _count_elements(page: JsonDict) -> int:
     return len(action_space(page["actions"])[0])
 
 
-def _check_decision(decision):
+def _check_decision(decision: Any) -> None:
     # DEVIATION: the loop accepts injected deciders, so unlike stock
     # upstream choose() a decision's shape is not guaranteed by its
     # producer. Unchecked, a malformed decision (e.g. probabilities
@@ -46,25 +66,25 @@ def _check_decision(decision):
 class Agent:
     def __init__(
         self,
-        url,
-        goals,
+        url: str,
+        goals: str | Sequence[str],
         *,
-        record_dir=None,
-        screenshots=False,
-        browser=None,
-        decider=None,
-        text_provider=None,
-        settings=None,
-        min_confidence=0.0,
-        max_empty_observes=5,
-        max_stale_decisions=3,
-        max_cycle_repeats=3,
-    ):
+        record_dir: str | Path | None = None,
+        screenshots: bool = False,
+        browser: BrowserLike | None = None,
+        decider: DeciderLike | None = None,
+        text_provider: TextProvider | None = None,
+        settings: Settings | None = None,
+        min_confidence: float = 0.0,
+        max_empty_observes: int = 5,
+        max_stale_decisions: int = 3,
+        max_cycle_repeats: int = 3,
+    ) -> None:
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
         plan = [task]
-        self.pending_text = None
+        self.pending_text: tuple[tuple[Any, str], str, JsonDict] | None = None
         self.settings = settings or load_settings()
         # DEVIATION: browser, decider and text provider are injectable, and a
         # local .html path / file:// URL selects the offline StaticBrowser.
@@ -72,14 +92,17 @@ class Agent:
         # choose()/field_text(), so the loop cannot run without Chrome plus
         # hosted API keys. Defaults preserve upstream behaviour for http(s)
         # URLs (CDP + SystemOne wire + OpenAI-compatible text helper).
+        self.browser: BrowserLike
         if browser is not None:
             self.browser = browser
         elif is_static_source(url):
             self.browser = StaticBrowser(url)
         else:
             self.browser = CdpBrowser(url)
-        self.decider = decider or SystemOneDecider(self.settings)
-        self.text_provider = text_provider or (lambda context: field_text(context, settings=self.settings))
+        self.decider: DeciderLike = decider or SystemOneDecider(self.settings)
+        self.text_provider: TextProvider = text_provider or (
+            lambda context: field_text(context, settings=self.settings)
+        )
         self.min_confidence = min_confidence
         self.max_empty_observes = max_empty_observes
         self.max_stale_decisions = max_stale_decisions
@@ -103,7 +126,7 @@ class Agent:
         except Exception:
             self.browser.close()
             raise
-        self.state = dict(
+        self.state: JsonDict = dict(
             browser=self.browser,
             goal="\n".join(plan),
             page=page,
@@ -126,7 +149,7 @@ class Agent:
             if page.get("screenshot"):
                 (self.record_dir / "000000.jpg").write_bytes(base64.b64decode(page["screenshot"]))
 
-    def _observe_settled(self):
+    def _observe_settled(self) -> JsonDict:
         """Observe, retrying while the element table is still empty.
 
         DEVIATION: upstream's first observation can return zero indexed
@@ -146,18 +169,18 @@ class Agent:
             attempts += 1
         return page
 
-    def snapshot(self):
+    def snapshot(self) -> JsonDict:
         return {
             **{k: v for k, v in self.state.items() if k != "browser"},
             "elements": action_space(self.state["page"]["actions"])[0],
         }
 
-    def _elapsed(self, state):
+    def _elapsed(self, state: JsonDict) -> int:
         if state["started_at"] is None:
-            return state["elapsed_ms"]
-        return round((time.perf_counter() - state["started_at"]) * 1000)
+            return int(state["elapsed_ms"])
+        return int(round((time.perf_counter() - state["started_at"]) * 1000))
 
-    def command(self, name, body=None):
+    def command(self, name: str, body: JsonDict | None = None) -> JsonDict:
         body = body or {}
         state = self.state
         if name == "tick":
@@ -280,7 +303,8 @@ class Agent:
                 state["status"] = "blocked"
                 state["blocked_reason"] = f"Stopped at the {MAX_ACTIONS}-action budget"
                 raise ValueError(state["blocked_reason"])
-            text, helper = None, None
+            text: str | None = None
+            helper: JsonDict | None = None
             if action["kind"] == "fill":
                 if not state["browser"].fresh(page):
                     raise StalePage("Page changed before text generation. Choose again.")
@@ -341,7 +365,7 @@ class Agent:
                 url=state["page"]["url"],
                 elapsed_ms=state["elapsed_ms"],
             )
-            if state["record"] and state["page"].get("screenshot"):
+            if self.record_dir is not None and state["page"].get("screenshot"):
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])
                 )
@@ -388,7 +412,7 @@ class Agent:
             raise ValueError("Unknown command")
         return self.snapshot()
 
-    def run(self):
+    def run(self) -> Iterator[JsonDict]:
         while self.state["status"] not in {"done", "blocked"}:
             try:
                 yield self.command("tick")
@@ -403,11 +427,11 @@ class Agent:
                 yield self.snapshot()
                 return
 
-    def close(self):
+    def close(self) -> None:
         self.browser.close()
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_args):
+    def __exit__(self, *_args: Any) -> None:
         self.close()
