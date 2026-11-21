@@ -139,30 +139,11 @@ jobs:
 
       # The inspector and static browser load non-Python files from the
       # package directory at runtime (static/, snapshot.js). Guard the
-      # packaging: every tracked non-.py package file must ship in both
-      # distributions. Expected files are derived from the source tree,
-      # so newly added assets are covered automatically.
+      # packaging: every non-.py package file must ship in both
+      # distributions (scripts/check_dist_assets.py, shared with the
+      # release workflow).
       - name: Verify package assets ship in both distributions
-        run: |
-          uv run --no-project python - <<'PY'
-          import glob, tarfile, zipfile
-          from pathlib import Path
-
-          pkg = Path("src/account_vault")
-          expected = sorted(
-              str(p.relative_to(pkg))
-              for p in pkg.rglob("*")
-              if p.is_file() and p.suffix not in {".py", ".pyc"} and "__pycache__" not in p.parts
-          )
-          assert expected, "no package assets found in source tree"
-          wheel_names = set(zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist())
-          missing = [rel for rel in expected if f"account_vault/{rel}" not in wheel_names]
-          sdist_names = set(tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames())
-          missing += [rel for rel in expected
-                      if not any(n.endswith(f"src/account_vault/{rel}") for n in sdist_names)]
-          assert not missing, f"assets missing from distributions: {missing}"
-          print(f"OK: all {len(expected)} assets in wheel and sdist: {expected}")
-          PY
+        run: uv run --no-project python scripts/check_dist_assets.py
 
       # And the wheel must actually install with assets on disk where
       # demo.py/static_dom.py look for them (package-relative paths).
