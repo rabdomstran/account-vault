@@ -5,6 +5,7 @@ deviations marked DEVIATION in src/account_vault/. No paid APIs, no browser.
 """
 
 import time
+from copy import deepcopy
 from unittest.mock import Mock
 
 import pytest
@@ -79,6 +80,8 @@ def make_runner(p):
         "elapsed_ms": 0,
         "plan": ["Find a book"],
         "plan_index": 0,
+        "no_progress": [],
+        "cycle_suppressed": [],
     }
     a.browser = a.state["browser"]
     return a
@@ -452,3 +455,211 @@ def test_reasoning_field_matches_the_deepseek_host_exactly():
         assert model._reasoning_field(lookalike) == {"reasoning": {"effort": "low"}}, url
     assert model._reasoning_field(Settings(text_model_reasoning="omit")) == {}
     assert model._reasoning_field(Settings(text_model_reasoning="none")) == {"reasoning": {"enabled": False}}
+
+
+# --- upstream issue #247 + PR #209/#67: drop-then-block, not block-only ---
+# #247's comment thread proposes dropping a recurring (url, control) pair
+# from the next offered set when it recurs twice and giving up cleanly at
+# three; PR #209 drops a no-op action from the next decision (fingerprint-
+# scoped) and caps episode-wide no-ops; #67's fork stops offering a dead
+# target after 2 failed tries. The first cut here only blocked on the same
+# (label, landing URL) 3x in the last 12 actions: no recovery turn, and
+# hub-and-spoke browsing (same "back" label landing on the hub from
+# different item pages) counted as a cycle. The tests below pin the
+# source-aware, drop-first behaviour; each fails against block-only.
+
+
+def _nav_page(url, label):
+    p = page(
+        [
+            {"id": "e1", "kind": "click", "label": label, "role": "link", "value": "", "node": 10},
+            {"id": "wait", "kind": "wait", "label": "Wait"},
+        ]
+    )
+    p["url"] = url
+    p["fingerprint"] = fingerprint(p)
+    return p
+
+
+def _go(runner, source, landing):
+    runner.state["page"] = source
+    runner.state["browser"].observe.return_value = landing
+    runner.state["decision"] = decision("e1", node=10, operation="CLICK")
+    runner.command("act", {"fingerprint": source["fingerprint"]})
+
+
+def test_noop_action_is_dropped_from_next_offer_until_page_moves():
+    p = page()
+    runner = make_runner(p)
+    runner.state["decision"] = decision("e3", node=20, operation="CLICK")
+    runner.command("act", {"fingerprint": p["fingerprint"]})
+    assert runner.state["history"][-1]["page_changed"] is False
+    assert runner.state["no_progress"] == ["e3"]
+    offered = []
+
+    def choose(state, goal, history):
+        offered.append([a["id"] for a in state["actions"]])
+        return decision("wait", node=None, operation="WAIT")
+
+    runner.decider.choose.side_effect = choose
+    runner.state["status"] = "ready"
+    runner.command("predict", {})
+    assert offered == [["e1", "wait"]], "the no-op control leaves the next offered set (#209)"
+    moved = page()
+    moved["text"] = "Results"
+    moved["fingerprint"] = fingerprint(moved)
+    runner.state["browser"].fresh.return_value = False
+    runner.state["browser"].observe.return_value = moved
+    runner.command("predict", {})
+    assert offered[-1] == ["e1", "e3", "wait"], "a moved page reoffers the control"
+    assert runner.state["no_progress"] == []
+
+
+def test_scattered_noops_hit_episode_cap_without_three_consecutive():
+    cap = 12  # MAX_ACTIONS // 5, as in PR #209's MAX_NO_PROGRESS
+    runner = make_runner(page())
+    calls = {"n": 0}
+
+    def observe(**_kwargs):
+        calls["n"] += 1
+        current = runner.state["page"]
+        if calls["n"] % 2 == 1:
+            return current  # no-op round
+        moved = deepcopy(current)
+        moved["text"] = f"after {calls['n']}"
+        moved["fingerprint"] = fingerprint(moved)
+        return moved
+
+    runner.state["browser"].observe.side_effect = observe
+    total = cap * 2 - 1  # no-ops land on odd rounds; the cap-th is the last
+    for round_no in range(1, total + 1):
+        current = deepcopy(runner.state["page"])
+        for action in current["actions"]:
+            if action["id"] == "e3":
+                action["label"] = f"Go {round_no}"  # distinct transition: cycle counting cannot fire
+        current["fingerprint"] = fingerprint(current)
+        runner.state["page"] = current
+        runner.state["decision"] = decision("e3", node=20, operation="CLICK")
+        runner.command("act", {"fingerprint": current["fingerprint"]})
+        if round_no == total - 2:
+            assert runner.state["status"] == "ready", "11 scattered no-ops are below the cap"
+    history = runner.state["history"]
+    assert runner.state["status"] == "blocked"
+    assert sum(1 for h in history if h["page_changed"] is False) == cap
+    flags = [h["page_changed"] for h in history]
+    assert all(flags[i : i + 3] != [False, False, False] for i in range(len(flags) - 2))
+
+
+def test_same_landing_from_different_sources_is_not_a_cycle():
+    # Hub-and-spoke product browsing: "Back to hub" lands on /hub from three
+    # different item pages. Keying on (label, landing URL) alone blocks this
+    # legitimate run at the third return; the transition key must include
+    # where the control was chosen (#247 comment: (url, chosen control)).
+    hub = _nav_page("https://example.test/hub", "View item")
+    runner = make_runner(hub)
+    for i in (1, 2, 3):
+        item = _nav_page(f"https://example.test/item{i}", "Back to hub")
+        _go(runner, hub, item)
+        _go(runner, item, hub)
+    assert runner.state["status"] == "ready"
+    assert len(runner.state["history"]) == 6
+    assert all(h["page_changed"] for h in runner.state["history"])
+
+
+def test_same_transition_is_suppressed_at_two_and_blocks_at_three():
+    a_page = _nav_page("https://example.test/a", "To B")
+    b_page = _nav_page("https://example.test/b", "To A")
+    runner = make_runner(a_page)
+    _go(runner, a_page, b_page)
+    _go(runner, b_page, a_page)
+    _go(runner, a_page, b_page)
+    assert {"from_url": "https://example.test/a", "kind": "click", "label": "To B"} in runner.state["cycle_suppressed"]
+    assert runner.state["status"] == "ready", "second identical transition suppresses, not blocks"
+    _go(runner, b_page, a_page)
+    _go(runner, a_page, b_page)  # direct act bypasses the offer: the block backstop must still fire
+    assert runner.state["status"] == "blocked"
+    assert "cycle" in runner.state["blocked_reason"].lower()
+    assert len(runner.state["history"]) == 5
+
+
+def test_cycle_guard_disabled_at_zero():
+    a_page = _nav_page("https://example.test/a", "To B")
+    b_page = _nav_page("https://example.test/b", "To A")
+    runner = make_runner(a_page)
+    runner.max_cycle_repeats = 0
+    for _ in range(3):
+        _go(runner, a_page, b_page)
+        _go(runner, b_page, a_page)
+    assert runner.state["status"] == "ready"
+    assert runner.state["cycle_suppressed"] == []
+
+
+def test_advancing_scrolls_are_progress_not_a_cycle():
+    # Upstream PR #212: repeated same-direction scrolls that move the
+    # viewport are how long pages are traversed; neither the cycle count
+    # nor the no-op budgets may treat them as going nowhere.
+    scrolled = page([{"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560}])
+    runner = make_runner(scrolled)
+    for step in range(1, 6):
+        moved = deepcopy(runner.state["page"])
+        moved["scroll"] = {"y": step * 560}
+        moved["fingerprint"] = fingerprint(moved)
+        runner.state["browser"].observe.return_value = moved
+        runner.state["decision"] = decision("scroll_down", node=None, operation="SCROLL_DOWN")
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert runner.state["status"] == "ready"
+    assert len(runner.state["history"]) == 5
+    assert all(h["page_changed"] for h in runner.state["history"])
+
+
+def test_refilling_a_field_with_new_values_is_not_a_cycle():
+    # Same page, same field, three different values: (label, landing URL)
+    # repeats, but each transition carries different text, so none repeats.
+    p = page()
+    runner = make_runner(p)
+    values = iter(["Zurich", "Bern", "Lugano"])
+    runner.text_provider = lambda context: (next(values), {"model": "test", "latency_ms": 0})
+    for step in range(3):
+        moved = deepcopy(runner.state["page"])
+        moved["text"] = f"filled {step}"
+        moved["fingerprint"] = fingerprint(moved)
+        runner.state["browser"].observe.return_value = moved
+        runner.state["decision"] = decision("e1", node=10, operation="TYPE_TEXT")
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert runner.state["status"] == "ready"
+    assert [h["text"] for h in runner.state["history"]] == ["Zurich", "Bern", "Lugano"]
+
+
+def test_covered_learning_does_not_spend_stale_strikes():
+    # Upstream PR #245 x the local stale-streak stop: a covered rejection
+    # executes nothing, so decision-layer suppressions (which learn only
+    # from history) never fire for it -- the snapshot learns instead, and
+    # each re-observe offers one fewer unhittable control. Counting those
+    # learning steps as stale strikes would block the run at three before
+    # a fourth, hittable alternative is ever offered (consent banners
+    # cover whole tables at once; #137 measured 33/33 on BBC News).
+    from account_vault.browser import CoveredTarget
+
+    runner = make_runner(page())
+    runner.decider.choose.return_value = decision("e3", node=20, operation="CLICK")
+    runner.state["browser"].act.side_effect = CoveredTarget("Target is covered. Observe again.")
+    rounds = {"n": 0}
+
+    def observe(**_kwargs):
+        rounds["n"] += 1
+        moved = page()
+        moved["text"] = f"offer {rounds['n']}"  # the covered node left the offer
+        moved["fingerprint"] = fingerprint(moved)
+        return moved
+
+    runner.state["browser"].observe.side_effect = observe
+    runner.state["status"] = "ready"
+    for _ in range(3):
+        runner.command("tick")
+    assert runner.state["status"] == "ready", "three covered learnings must not block the run"
+    assert runner.state["stale_streak"] == 0
+    assert runner.state["history"] == []  # still nothing executed
+    # A plain stale rejection (no new knowledge) still counts as before.
+    runner.state["browser"].act.side_effect = StalePage("target vanished")
+    runner.command("tick")
+    assert runner.state["stale_streak"] == 1

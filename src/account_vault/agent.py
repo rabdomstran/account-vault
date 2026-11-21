@@ -14,9 +14,9 @@ from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, Protocol, Self
 
-from .browser import CdpBrowser, StalePage
+from .browser import CdpBrowser, CoveredTarget, StalePage
 from .model import MissingValueError, SystemOneDecider, action_space, field_context, field_text
-from .questions import MAX_ACTIONS, MAX_DECISIONS
+from .questions import CYCLE_WINDOW, MAX_ACTIONS, MAX_DECISIONS, MAX_NO_PROGRESS
 from .settings import Settings, load_settings
 from .static_dom import StaticBrowser, is_static_source
 
@@ -61,6 +61,26 @@ def _check_decision(decision: Any) -> None:
     )
     if not valid:
         raise ValueError("Invalid decide response; no action executed.")
+
+
+def _cycle_key(entry: JsonDict) -> tuple[Any, ...] | None:
+    # A full transition: where the control was chosen, what it was, and
+    # where it landed. Keying on (label, landing URL) alone counted
+    # hub-and-spoke browsing ("back" from three different item pages) as
+    # a cycle; the source URL is the #247 comment's (url, chosen control)
+    # half. Text rides along so refilling a field with a new value is a
+    # different transition from repeating the same fill. Wait/scroll are
+    # not navigation-cycle steps: a scroll that advanced is progress
+    # (upstream PR #212) and a scroll that did not is a no-op below.
+    if entry.get("kind") in {"wait", "scroll", None}:
+        return None
+    return (
+        entry.get("from_url") or entry.get("url"),
+        entry.get("kind"),
+        entry.get("action"),
+        entry.get("text"),
+        entry.get("url"),
+    )
 
 
 class Agent:
@@ -138,6 +158,12 @@ class Agent:
             decisions=[],
             text_calls=[],
             stale_streak=0,
+            # Action ids that left this exact page unchanged, dropped
+            # from the next offer while the fingerprint holds (#209).
+            no_progress=[],
+            # (from_url, kind, label) transitions seen twice, dropped
+            # for one decision on that source page (#247).
+            cycle_suppressed=[],
             blocked_reason=None,
             elapsed_ms=0,
             started_at=None,
@@ -169,10 +195,51 @@ class Agent:
             attempts += 1
         return page
 
+    def _refresh(self) -> None:
+        """Re-observe, keeping no-op exclusions only on an identical page.
+
+        DEVIATION (upstream PR #209): excluded ids are positional into
+        the observed action table, so they are meaningful only while the
+        fingerprint -- which hashes that table -- is byte-identical. Any
+        page move reoffers everything.
+        """
+        state = self.state
+        previous = state["page"]["fingerprint"]
+        state["page"] = state["browser"].observe(screenshot=self.screenshots)
+        if state["page"]["fingerprint"] != previous:
+            state["no_progress"] = []
+
+    def _offered_page(self) -> JsonDict:
+        """The page view the next decision is made from.
+
+        DEVIATION: no-op controls (#209) and twice-seen cycle transitions
+        (#247) leave the offered set so the runner-up gets a turn before
+        any stop. Filtering happens between decisions, on the fresh
+        observation -- the one-request, consume-once, freshness-checked
+        contract is untouched, and act still resolves against the full
+        observed page, so suppression is an offer, never an enforcement.
+        """
+        state = self.state
+        page: JsonDict = state["page"]
+        dropped_ids = set(state.get("no_progress") or [])
+        dropped_pairs = {
+            (entry.get("kind"), entry.get("label"))
+            for entry in (state.get("cycle_suppressed") or [])
+            if entry.get("from_url") == page["url"]
+        }
+        if not dropped_ids and not dropped_pairs:
+            return page
+        offered = [
+            action
+            for action in page["actions"]
+            if action["id"] not in dropped_ids and (action.get("kind"), action.get("label")) not in dropped_pairs
+        ]
+        return page if len(offered) == len(page["actions"]) else {**page, "actions": offered}
+
     def snapshot(self) -> JsonDict:
         return {
             **{k: v for k, v in self.state.items() if k != "browser"},
-            "elements": action_space(self.state["page"]["actions"])[0],
+            "elements": action_space(self._offered_page()["actions"])[0],
         }
 
     def _elapsed(self, state: JsonDict) -> int:
@@ -207,8 +274,26 @@ class Agent:
                 # execute before its post-action observation went stale
                 # is progress, not a strike.
                 executed = len(state["history"]) > history_before
-                state["stale_streak"] = 0 if executed else state.get("stale_streak", 0) + 1
-                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                fingerprint_before = state["page"]["fingerprint"]
+                self._refresh()
+                # DEVIATION: a covered rejection (#245) that changed the
+                # offered set is knowledge progress, not a stale strike:
+                # the snapshot just learned to omit an unhittable node,
+                # and counting it would block runs that need more than
+                # max_stale_decisions learning steps (whole tables sit
+                # under consent banners; #137) before a hittable
+                # runner-up is ever offered. Decision-layer drops cannot
+                # learn this case at all -- nothing executed, so nothing
+                # enters history. The model-call budget still bounds it.
+                learned_covered = (
+                    isinstance(error, CoveredTarget) and state["page"]["fingerprint"] != fingerprint_before
+                )
+                if executed:
+                    state["stale_streak"] = 0
+                elif learned_covered:
+                    state["stale_streak"] = state.get("stale_streak", 0)
+                else:
+                    state["stale_streak"] = state.get("stale_streak", 0) + 1
                 state["elapsed_ms"] = self._elapsed(state)
                 if state["stale_streak"] >= self.max_stale_decisions:
                     state["status"] = "blocked"
@@ -222,7 +307,7 @@ class Agent:
             if state["started_at"] is None:
                 state["started_at"] = time.perf_counter()
             if not state["browser"].fresh(state["page"]):
-                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                self._refresh()
             state["decision"] = None
             if state["status"] in {"done", "blocked"}:
                 raise ValueError("This run has stopped. Start a fresh demo.")
@@ -236,8 +321,18 @@ class Agent:
                 state["status"] = "blocked"
                 state["blocked_reason"] = f"Reached the {MAX_DECISIONS}-request model-call budget"
                 raise ValueError(state["blocked_reason"])
-            decision = self.decider.choose(state["page"], state["goal"], state["history"])
+            decision = self.decider.choose(self._offered_page(), state["goal"], state["history"])
             _check_decision(decision)
+            # A cycle suppression buys exactly one decision on its source
+            # page, then lapses: the control is reoffered next visit, and
+            # executing the same transition again is what reaches the
+            # blocking threshold. No-op exclusions lapse by fingerprint
+            # instead (see _refresh), not by being offered around.
+            state["cycle_suppressed"] = [
+                entry
+                for entry in (state.get("cycle_suppressed") or [])
+                if entry.get("from_url") != state["page"]["url"]
+            ]
             state["decisions"].append(
                 {
                     **decision,
@@ -262,7 +357,7 @@ class Agent:
                     state["status"] = "blocked"
                     state["elapsed_ms"] = self._elapsed(state)
                 else:
-                    state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                    self._refresh()
                     state["status"] = "ready"
                 return self.snapshot()
             self._low_confidence_reobserves = 0
@@ -352,6 +447,10 @@ class Agent:
                     "operation": decision["operation"],
                     "target": decision["target"],
                     "page_changed": None,
+                    # Source page of the transition; "url" below is
+                    # rewritten to the landing page after observing.
+                    # Cycle counting needs both ends (see _cycle_key).
+                    "from_url": page["url"],
                     "url": page["url"],
                     "usage": decision["usage"],
                     "executed_ms": self._elapsed(state),
@@ -369,6 +468,19 @@ class Agent:
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])
                 )
+            last = state["history"][-1]
+            # DEVIATION: give a no-op action its turn back (upstream PR
+            # #209; #67's fork does the same after 2 tries, #245 for
+            # covered controls). An action that left this page unchanged
+            # is dropped from the next offer while the fingerprint holds,
+            # so the runner-up is tried instead of repeating the dead
+            # control into the stop below. Progress or a deliberate wait
+            # reoffers everything. Waits themselves are never dropped:
+            # waiting on a loading page is not an action that went nowhere.
+            if last["page_changed"] is True or last["kind"] == "wait":
+                state["no_progress"] = []
+            elif selected not in (state.get("no_progress") or []):
+                state["no_progress"] = [*(state.get("no_progress") or []), selected]
             repeated = state["history"][-3:]
             # DEVIATION: page_changed stays None when the post-action
             # observation failed (the exception path above preserves the
@@ -376,38 +488,57 @@ class Agent:
             # no-progress stop forever and a stalled run keeps spending
             # model calls (upstream issue #94). None means "no observed
             # progress" and counts toward the stop, like False.
-            no_progress = len(repeated) == 3 and all(
+            consecutive = len(repeated) == 3 and all(
                 h["page_changed"] in (False, None) and h["kind"] != "wait" for h in repeated
             )
-            state["status"] = "blocked" if no_progress else "ready"
-            if no_progress:
+            # DEVIATION: episode-wide no-op cap (#209). With the drop
+            # above, an unsatisfiable goal can wander through distinct
+            # dead controls without ever producing three unchanged pages
+            # in a row; this bounds that exploration. Derived from
+            # history so the trace and the rule cannot disagree.
+            episode_noops = sum(
+                1 for h in state["history"] if h["page_changed"] in (False, None) and h["kind"] != "wait"
+            )
+            state["status"] = "ready"
+            if consecutive:
+                state["status"] = "blocked"
                 state["blocked_reason"] = "Three consecutive actions left the page unchanged"
-            elif self.max_cycle_repeats and action["kind"] not in {"wait", "scroll"}:
+            elif episode_noops >= MAX_NO_PROGRESS:
+                state["status"] = "blocked"
+                state["blocked_reason"] = (
+                    f"{episode_noops} actions left the page unchanged (episode cap {MAX_NO_PROGRESS})"
+                )
+            elif self.max_cycle_repeats and _cycle_key(last) is not None:
                 # DEVIATION: page-changing cycle stop (upstream issue
                 # #247: sort -> index -> category -> repeat, 44 actions,
                 # every step changing the page so repeat/unchanged guards
                 # never fire). No fix exists upstream — the issue is open
-                # at HEAD with no linked PR (checked with gh, 2026-11-21);
-                # adjacent PRs (#245 covered reoffer, #209 no-op caps,
-                # #212/#195 scroll) do not address cycles. The issue's own
-                # comment thread proposes tracking recent (url, control)
-                # pairs and giving up cleanly; we adopt that in bounded
-                # form: the same (action label, landing URL) pair executed
-                # max_cycle_repeats times within the last 12 actions ends
-                # the run blocked. We block instead of dropping the
-                # control from the next offered set (the comment's other
-                # half) because mutating the offered set mid-decision
-                # breaks the one-request/atomicity contract; escalation
-                # can revisit with a fresh observation. 0 disables.
-                pair = (action["label"], state["history"][-1]["url"])
-                recent = [h for h in state["history"][-12:] if h["kind"] not in {"wait", "scroll"}]
-                repeats = sum(1 for h in recent if (h["action"], h["url"]) == pair)
+                # at HEAD cf3c406 with no linked PR (checked with gh,
+                # 2026-11-21); adjacent PRs address cousins (#209 no-op
+                # drop/cap, #245 covered-control reoffer, #212/#195
+                # premature BLOCKED while scrolling), not cycles. The
+                # #247 comment's shape, adopted here: count identical
+                # transitions (source URL, kind, label, text, landing
+                # URL) over the recent window; at two, drop the control
+                # for one decision on that source page so the model must
+                # pick something else; at max_cycle_repeats, give up
+                # cleanly as blocked. Dropping is safe for the
+                # one-request contract -- it happens between decisions,
+                # on the fresh observation, exactly as #209's skip does;
+                # it does not mutate an in-flight decision. 0 disables.
+                key = _cycle_key(last)
+                eligible = [h for h in state["history"] if _cycle_key(h) is not None][-CYCLE_WINDOW:]
+                repeats = sum(1 for h in eligible if _cycle_key(h) == key)
                 if repeats >= self.max_cycle_repeats:
                     state["status"] = "blocked"
                     state["blocked_reason"] = (
-                        f"Action cycle: {pair[0]!r} landed on {pair[1]} "
-                        f"{repeats} times in the last {len(recent)} actions"
+                        f"Action cycle: {last['action']!r} from {last.get('from_url')} to {last['url']} "
+                        f"{repeats} times in the last {len(eligible)} actions"
                     )
+                elif repeats == 2:
+                    suppression = {"from_url": last.get("from_url"), "kind": last["kind"], "label": last["action"]}
+                    if suppression not in (state.get("cycle_suppressed") or []):
+                        state["cycle_suppressed"] = [*(state.get("cycle_suppressed") or []), suppression]
         else:
             raise ValueError("Unknown command")
         return self.snapshot()

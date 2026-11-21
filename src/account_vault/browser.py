@@ -49,13 +49,27 @@ class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
 
 
+class CoveredTarget(StalePage):
+    """The target's centre is covered; refused before any input (#245).
+
+    Distinct from a plain stale page: nothing was dispatched, the node is
+    recorded in the snapshot cache, and the next observe omits it until
+    its centre is hittable again -- so re-observing is always safe.
+    """
+
+
 class CdpBrowser:
     after_input: dict[str, Any] | None
+    # True after a covered rejection until the next observe: the cached
+    # page's offered set is known wrong (it still lists the covered node)
+    # even though its occlusion-blind marker still matches.
+    _offer_stale: bool
 
     def __init__(self, url: str) -> None:
         _, ensure_daemon = _harness()
         ensure_daemon()
         self.after_input = None
+        self._offer_stale = False
         self.target: str | None = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
@@ -114,11 +128,16 @@ class CdpBrowser:
                 pass
         for attempt in range(10):
             try:
-                return browser_operation({"operation": "observe", "session": self.session, "screenshot": screenshot})
+                result = browser_operation({"operation": "observe", "session": self.session, "screenshot": screenshot})
             except StalePage:
                 if attempt == 9:
                     raise
                 time.sleep(0.02)
+            else:
+                # This observation's offered set is current (covered
+                # nodes omitted, restored nodes back); trust it again.
+                self._offer_stale = False
+                return result
         raise StalePage("Page did not settle")
 
     def fresh(self, page: dict[str, Any], action: dict[str, Any] | None = None) -> bool:
@@ -131,6 +150,14 @@ class CdpBrowser:
                 f"return c ? [c.pageKey(),c.guard(c.nodes.get({node}))] : null; }})()"
             )
             return bool(current == [page["page_key"], page["guards"].get(str(node))])
+        # DEVIATION: after a covered rejection the cached page still offers
+        # a control the snapshot will now omit, but its marker deliberately
+        # ignores occlusion and would still match. Without this, manual
+        # predict/act callers (the inspector) reoffer the covered target
+        # forever -- the hole flagged in upstream PR #245's review. Force
+        # the re-observe every path already takes on a stale marker.
+        if getattr(self, "_offer_stale", False):
+            return False
         return bool(self.evaluate(MARKER) == page["marker"])
 
     def act(self, action: dict[str, Any], page: dict[str, Any], text: str | None = None) -> Any:
@@ -138,7 +165,11 @@ class CdpBrowser:
             raise StalePage("Page changed since this decision. Observe again.")
         if action["kind"] == "wait":
             time.sleep(0.1)
-        result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
+        try:
+            result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
+        except CoveredTarget:
+            self._offer_stale = True  # cached page offers a now-hidden node
+            raise
         self.after_input = action if action["kind"] != "wait" else None
         return result
 
@@ -183,13 +214,21 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
             # Code-owned node IDs refer to actual observed elements, never model-generated selectors.
             target = evaluate(
                 """(action => {
-              const e=window.__jevFast?.nodes.get(action.node);
+              const cache=window.__jevFast, e=cache?.nodes.get(action.node);
               if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
                   !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
               if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
               const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
               if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-              if (!e.contains(document.elementFromPoint(x,y))) return null;
+              cache.hits ??= ((el,px,py)=>el.contains(document.elementFromPoint(px,py)));
+              if (!cache.hits(e,x,y)) {
+                // DEVIATION: remember the covered node so the snapshot
+                // omits it until hittable again (upstream PR #245).
+                // Proven before any input -- including the SELECT
+                // mutation below -- so re-observing cannot double-act.
+                (cache.covered ??= new Set()).add(action.node);
+                return {covered:true};
+              }
               if (action.kind==='select') {
                 if (e.tagName!=='SELECT') return null;
                 // DEVIATION: upstream checks that SOME enabled option has the
@@ -212,10 +251,12 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
                 + json.dumps(action)
                 + ")"
             )
+            if target == {"covered": True}:
+                raise CoveredTarget("Target is covered. Observe again.")
             if target is None:
                 if kind == "select":
                     raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
-                raise StalePage("Target changed or is covered. Observe again.")
+                raise StalePage("Target changed. Observe again.")
             if kind != "select":
                 x, y = target["x"], target["y"]
                 for event in ("mousePressed", "mouseReleased"):

@@ -16,7 +16,7 @@ from unittest.mock import Mock
 import pytest
 
 import account_vault.browser as browser
-from account_vault.browser import CdpBrowser, StalePage, browser_operation
+from account_vault.browser import CdpBrowser, CoveredTarget, StalePage, browser_operation
 
 INFO = {
     "url": "https://example.test/",
@@ -367,7 +367,7 @@ def test_select_acts_inside_the_evaluate_without_mouse_input(fake_cdp):
 
 def test_unresolvable_target_is_stale_for_clicks_but_runtime_for_select(fake_cdp):
     fake_cdp.script = [None]
-    with pytest.raises(StalePage, match="Target changed or is covered"):
+    with pytest.raises(StalePage, match="Target changed"):
         browser_operation(act_request({"kind": "click", "node": 3, "id": "a9"}))
 
     fake_cdp.script = [None]
@@ -391,3 +391,53 @@ def test_evaluation_failure_during_select_is_not_reported_as_stale(fake_cdp):
     fake_cdp.script = [dict(failure)]
     with pytest.raises(StalePage):
         browser_operation({"operation": "observe", "session": "S1", "screenshot": False})
+
+
+# --- covered targets (upstream PR #245): proven pre-input, observe again ---
+# The snapshot remembers a node whose act-time hit test failed and omits it
+# from later offers until its centre is hittable again (the JS half is
+# exercised for real in tests/test_live_cdp.py). These pin the Python half:
+# a covered verdict from the resolver is a distinct, retryable rejection --
+# never mouse input, never an unconfirmed-mutation RuntimeError -- and the
+# cached page must stop reading as fresh, because its offered set is now
+# known wrong even though the occlusion-blind marker is unchanged (the
+# manual predict/act hole flagged in #245's review).
+
+
+def test_covered_click_is_a_distinct_preinput_rejection(fake_cdp):
+    fake_cdp.script = [{"covered": True}]
+    with pytest.raises(CoveredTarget, match="covered"):
+        browser_operation(act_request({"kind": "click", "node": 3, "id": "a13"}))
+    assert issubclass(CoveredTarget, StalePage)  # tick's stale handling still applies
+    assert fake_cdp.methods() == ["Runtime.evaluate"]  # refused before any input dispatch
+    # The resolver records the node in the snapshot cache so the next
+    # observe can omit it; it still receives only the observed node id.
+    expression = fake_cdp.evaluate_params()[0]["expression"]
+    assert "cache.covered" in expression and '"node": 3' in expression
+
+
+def test_covered_select_is_retryable_not_an_unconfirmed_mutation(fake_cdp):
+    # Covered is proven before selectedIndex is touched, so unlike an
+    # interrupted dropdown it may simply re-observe (#245).
+    fake_cdp.script = [{"covered": True}]
+    with pytest.raises(CoveredTarget, match="covered"):
+        browser_operation(act_request({"kind": "select", "node": 3, "value": "1", "id": "a14"}))
+    assert fake_cdp.methods() == ["Runtime.evaluate"]
+
+
+def test_covered_rejection_makes_the_cached_page_unfresh_until_observe(fake_cdp, monkeypatch):
+    operation = Mock(side_effect=CoveredTarget("Target is covered. Observe again."))
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    instance = bare_browser()
+    monkeypatch.setattr(instance, "fresh", Mock(return_value=True))  # act-time per-node gate
+    with pytest.raises(CoveredTarget):
+        instance.act({"kind": "click", "node": 1, "id": "a15"}, page={})
+
+    real_fresh = CdpBrowser.fresh.__get__(instance)
+    assert real_fresh(guard_page()) is False  # known-wrong offer: no marker evaluation needed
+    assert fake_cdp.evaluate_params() == []
+
+    monkeypatch.setattr(browser, "browser_operation", Mock(return_value=dict(INFO)))
+    instance.observe(screenshot=False)  # the re-observe clears the flag
+    fake_cdp.script = ["M1"]
+    assert real_fresh(guard_page()) is True

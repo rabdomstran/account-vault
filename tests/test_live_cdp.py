@@ -151,3 +151,117 @@ def test_live_loop_drives_fixture_to_done(dedicated_chrome):
         # Independent outcome evidence, not the decider's DONE.
         assert page["title"] == "Casa Flora · Forma"
         assert "Free cancellation included" in page["text"]
+
+
+# --- upstream PR #245: a covered control leaves the offer until uncovered --
+# Real geometry only exists in a real browser: a fixed overlay covers one
+# button's centre, a second button stays hittable. Decision-layer drops
+# cannot help here -- a covered act is refused before input and records no
+# history for them to learn from -- so without snapshot-level hiding the
+# agent re-picks the covered button until the stale-streak stop blocks it.
+
+COVERED_HTML = """<!doctype html><title>Covered checks</title>
+<style>body{margin:0;font:18px sans-serif}
+#covered{position:absolute;left:40px;top:40px;width:160px;height:40px}
+#veil{position:fixed;left:0;top:0;width:260px;height:120px;background:#333;z-index:10}
+#free{position:absolute;left:40px;top:220px;width:160px;height:40px}
+#status{position:absolute;left:40px;top:300px}</style>
+<button id="covered" onclick="window.__clicks.push('covered')">Covered action</button>
+<div id="veil">overlay</div>
+<button id="free" onclick="window.__clicks.push('free');
+document.getElementById('status').textContent='Free done'">Free action</button>
+<p id="status">pending</p><script>window.__clicks=[]</script>"""
+
+
+def _covered_url():
+    from urllib.parse import quote
+
+    return "data:text/html," + quote(COVERED_HTML)
+
+
+def test_live_covered_control_leaves_offer_until_uncovered(dedicated_chrome):
+    from account_vault.browser import CdpBrowser, CoveredTarget
+
+    browser = CdpBrowser(_covered_url())
+    try:
+        page = browser.observe(screenshot=False)
+        labels = [a["label"] for a in page["actions"]]
+        assert "Covered action" in labels and "Free action" in labels
+        covered = next(a for a in page["actions"] if a["label"] == "Covered action")
+
+        with pytest.raises(CoveredTarget):
+            browser.act(covered, page)
+        assert browser.evaluate("window.__clicks") == []  # refused before input
+        # The cached offer is known wrong even though the marker (which
+        # deliberately ignores occlusion) still matches: manual predict
+        # must re-observe instead of reoffering from this page (#245 P1).
+        assert browser.fresh(page) is False
+
+        for _ in range(2):  # stable across re-observes, not a one-off
+            hidden = browser.observe(screenshot=False)
+            assert not any(a.get("node") == covered["node"] for a in hidden["actions"])
+            assert any(a["label"] == "Free action" for a in hidden["actions"])
+            assert hidden["marker"] == page["marker"]  # occlusion stays out of the marker
+
+        browser.evaluate("document.getElementById('veil').remove()")
+        restored = browser.observe(screenshot=False)
+        again = next(a for a in restored["actions"] if a["label"] == "Covered action")
+        browser.act(again, restored)
+        assert browser.evaluate("window.__clicks") == ["covered"]
+    finally:
+        browser.close()
+
+
+def test_live_agent_recovers_from_a_covered_top_choice(dedicated_chrome):
+    # The run-level case the decision layer misses: the decider's top
+    # choice is covered, a hittable runner-up completes the goal. Without
+    # snapshot hiding this ends blocked after three refused decisions.
+    from account_vault import Agent
+    from account_vault.browser import CdpBrowser
+    from account_vault.model import MappingTextProvider
+
+    def stub(choice, node, operation):
+        return {
+            "choice": choice,
+            "node": node,
+            "operation": operation,
+            "target": "1",
+            "confidence": 1.0,
+            "probabilities": {choice: 1.0},
+            "operation_probabilities": {operation: 1.0},
+            "target_probabilities": {},
+            "target_confidence": None,
+            "raw_answers": {},
+            "model": "covered-stub",
+            "usage": {},
+            "latency_ms": 0,
+            "request": {},
+        }
+
+    class PreferCovered:
+        def __init__(self):
+            self.calls = 0
+
+        def validate(self):
+            return None
+
+        def choose(self, state, goal, history):
+            self.calls += 1
+            if "Free done" in state["text"]:
+                return stub("DONE", None, "DONE")
+            for wanted in ("Covered action", "Free action"):
+                for a in state["actions"]:
+                    if a["kind"] == "click" and a["label"] == wanted:
+                        return stub(a["id"], a.get("node"), "CLICK")
+            return stub("BLOCKED", None, "BLOCKED")
+
+    decider = PreferCovered()
+    browser = CdpBrowser(_covered_url())
+    with Agent(
+        _covered_url(), "Do the free action", browser=browser, decider=decider, text_provider=MappingTextProvider({})
+    ) as agent:
+        list(agent.run())
+        assert agent.state["status"] == "done"
+        assert [h["action"] for h in agent.state["history"]] == ["Free action"]
+        assert decider.calls == 3  # covered refused once, runner-up, DONE
+        assert browser.evaluate("window.__clicks") == ["free"]

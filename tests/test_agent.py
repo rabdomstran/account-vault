@@ -210,6 +210,8 @@ def runner():
         "elapsed_ms": 0,
         "plan": ["Find a book"],
         "plan_index": 0,
+        "no_progress": [],
+        "cycle_suppressed": [],
     }
     a.browser = a.state["browser"]
     return a
