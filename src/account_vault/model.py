@@ -13,6 +13,7 @@ import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -288,7 +289,10 @@ def _reasoning_field(settings: Settings) -> JsonDict:
         return {}
     if mode == "none":
         return {"reasoning": {"enabled": False}}
-    if "api.deepseek.com/" in settings.text_model_base_url:
+    # Hostname equality, not substring: "api.deepseek.com/" in a URL
+    # also matches https://evil.test/api.deepseek.com/ (CodeQL
+    # py/incomplete-url-substring-sanitization, alert #1).
+    if urlparse(settings.text_model_base_url).hostname == "api.deepseek.com":
         return {"thinking": {"type": "disabled"}}
     return {"reasoning": {"effort": mode}}
 
