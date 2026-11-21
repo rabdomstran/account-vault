@@ -48,7 +48,7 @@ packages = ["src/account_vault"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4,<9",
+    "pytest>=8.4,<10",
     "ruff>=0.14,<1",
     "pillow>=11,<13",
     "pytest-cov>=6,<8",
