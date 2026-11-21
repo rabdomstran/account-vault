@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a capability or improvement
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't be done today, and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The smallest change that would solve it.
+    validations:
+      required: true
+  - type: textarea
+    id: verify
+    attributes:
+      label: How would we verify it
+      description: >-
+        The independent outcome check (a test, a fixture, or an e2e
+        observation) that would prove this works. "The model says DONE"
+        is not verification in this project.

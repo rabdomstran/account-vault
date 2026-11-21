@@ -1,0 +1,50 @@
+name: Bug report
+description: Something in the agent loop, inspector, or vault behaves incorrectly
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Note the design rule: the decider's DONE is
+        never proof — if you can, describe the independent evidence
+        (final page state) that shows the wrong outcome.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The observed behaviour, including any error or blocked_reason.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Commands, goal text, and the page/fixture involved.
+      placeholder: |
+        uv run python -m account_vault --html ...
+        # or: uv run account-vault-demo (inspector steps)
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - Static (offline file)
+        - Live Chrome (CDP)
+        - Inspector UI
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, commit or version (account-vault --version / git rev-parse HEAD).
