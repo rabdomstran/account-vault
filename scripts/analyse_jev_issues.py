@@ -270,7 +270,6 @@ PARTIAL_NOTES = {
     16: "attach default fixed in code; SOCKS first-call crash remains (httpx lacks the socks extra)",
     25: "decider object + base URL landed; wire shape still /v1/systemone",
     125: "local backend landed; no MCP stdio server",
-    227: "enumeration in port notes; CDP native-commit landed later in code",
 }
 
 STATUSES = ("handled", "partial", "open", "ignore", "unclassified")
@@ -651,10 +650,12 @@ def resolve_status(
             return "partial", notes, False
         if number in PARTIAL_NOTES and not in_code:
             return "partial", notes, False
-        # Stale = a review still queues it (P0/P1) although code fixed it.
-        # #247 is carved out: the port Fixed table already records the
-        # spend guard; the accuracy remainder is tracked as #248.
-        stale = in_code and docs_say_open and number != 247
+        # Stale = code fixed it but the living record has not caught up.
+        # The drift review is a dated snapshot (its P0/P1 queues are
+        # history, never edited after the fact), so the port notes'
+        # Fixed table is the doc that must record a pickup; once it
+        # does, a lingering drift-review queue entry is not doc lag.
+        stale = in_code and docs_say_open and not in_port_fixed
         return "handled", notes, stale
     if number in drift_sets["ignore"] or record.cluster == "community-noise":
         if not notes:
