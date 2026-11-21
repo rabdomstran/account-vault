@@ -212,6 +212,93 @@ def test_live_covered_control_leaves_offer_until_uncovered(dedicated_chrome):
         browser.close()
 
 
+# --- upstream issue #227 (fill half): native controls must commit ---------
+# The issue's own repro form (text + two dates + select + checkbox +
+# submit): before the fix both dates enumerated but Input.insertText
+# committed nothing -- value stayed empty, zero input/change events, and
+# the form submitted blank dates as success. This is the live regression
+# the drift review asks for; an offline test passed even while broken.
+
+NATIVE_HTML = """<!doctype html><title>Booking</title>
+<form id="f">
+ <label>Destino <input type="text" id="dest" name="dest"></label>
+ <label>Check-in <input type="date" id="ci" name="ci"></label>
+ <label>Check-out <input type="date" id="co" name="co" value="2027-01-15"></label>
+ <label>Pickup time <input type="time" id="pt" name="pt"></label>
+ <label>Shade <input type="color" id="sh" name="sh"></label>
+ <label>Max price <input type="range" id="mp" name="mp" min="0" max="100" value="10"></label>
+ <label>Guests <select id="g" name="g"><option value="1">1</option><option value="2">2</option></select></label>
+ <label><input type="checkbox" id="fc" name="fc"> Free cancellation</label>
+ <button type="submit">Search</button>
+</form>
+<script>window.__events=[];for (const id of ['ci','co','pt','sh','mp','dest'])
+ for (const t of ['input','change'])
+  document.getElementById(id).addEventListener(t,e=>window.__events.push(id+':'+t+':'+e.target.value));
+ document.getElementById('f').addEventListener('submit',e=>{e.preventDefault();
+  window.__submitted=new URLSearchParams(new FormData(e.target)).toString();});</script>"""
+
+
+def test_live_native_fills_commit_and_rejects_loudly(dedicated_chrome):
+    from urllib.parse import quote
+
+    from account_vault.browser import CdpBrowser
+
+    browser = CdpBrowser("data:text/html," + quote(NATIVE_HTML))
+    try:
+
+        def fill(label, text):
+            page = browser.observe(screenshot=False)
+            action = next(a for a in page["actions"] if a["label"] == label and a["kind"] == "fill")
+            browser.act(action, page, text=text)
+
+        def value(element_id):
+            return browser.evaluate(f"document.getElementById('{element_id}').value")
+
+        page = browser.observe(screenshot=False)
+        labels = [a["label"] for a in page["actions"]]
+        assert "Check-in" in labels and "Check-out" in labels  # enumeration (#215/#227)
+
+        # The reported failure: a valid date now commits, with the events
+        # a real edit fires, in order.
+        fill("Check-in", "2027-03-01")
+        assert value("ci") == "2027-03-01"
+        assert browser.evaluate("window.__events") == ["ci:input:2027-03-01", "ci:change:2027-03-01"]
+
+        # An invalid value fails loudly, leaves the preset untouched and
+        # fires nothing -- it never reaches the form as an empty date.
+        with pytest.raises(RuntimeError, match="Native input fill rejected: not a valid date value"):
+            fill("Check-out", "March 5, 2027")
+        assert value("co") == "2027-01-15"
+        assert browser.evaluate("window.__events.filter(e=>e.startsWith('co:'))") == []
+
+        fill("Check-out", "2027-03-05")
+        fill("Pickup time", "09:30")
+        fill("Shade", "#FF0000")  # the browser canonicalises case
+        fill("Max price", "42")
+        assert (value("co"), value("pt"), value("sh"), value("mp")) == ("2027-03-05", "09:30", "#ff0000", "42")
+
+        # Color/range sanitise invalid input to a default rather than
+        # empty, so the executor shape-checks them up front.
+        with pytest.raises(RuntimeError, match="not a valid color value"):
+            fill("Shade", "red")
+        with pytest.raises(RuntimeError, match="not a valid range value"):
+            fill("Max price", "loud")
+        assert (value("sh"), value("mp")) == ("#ff0000", "42")
+
+        # The plain-text typing path is untouched by the native branch.
+        fill("Destino", "Lisbon")
+        assert value("dest") == "Lisbon"
+
+        page = browser.observe(screenshot=False)
+        search = next(a for a in page["actions"] if a["label"] == "Search" and a["kind"] == "click")
+        browser.act(search, page)
+        submitted = browser.evaluate("window.__submitted")
+        assert "ci=2027-03-01" in submitted and "co=2027-03-05" in submitted
+        assert "pt=09%3A30" in submitted and "dest=Lisbon" in submitted
+    finally:
+        browser.close()
+
+
 def test_live_agent_recovers_from_a_covered_top_choice(dedicated_chrome):
     # The run-level case the decision layer misses: the decider's top
     # choice is covered, a hittable runner-up completes the goal. Without

@@ -40,6 +40,15 @@ def cdp(method: str, **params: Any) -> Any:
     return real_cdp(method, **params)
 
 
+# DEVIATION: native value controls Input.insertText cannot commit. Typing
+# into a segmented date/time control, a color picker or a range slider
+# changes nothing (or, for range, the preceding centre click sets a
+# midpoint), yet the run reports success and submits the field empty or
+# wrong (upstream issue #227, fill half; enumeration landed earlier).
+# Fills for these types commit through the native value setter inside
+# the act resolver below. The JS list there mirrors this set.
+NATIVE_FILL_TYPES = frozenset({"date", "datetime-local", "time", "month", "week", "color", "range"})
+
 # Atomically read visible content and controls, preserving actual DOM node identity.
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text(encoding="utf-8")
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
@@ -198,8 +207,15 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
     def evaluate(expression: str) -> Any:
         result = call("Runtime.evaluate", expression=expression, returnByValue=True)
         if result.get("exceptionDetails"):
-            if operation == "act" and request["action"]["kind"] == "select":
-                raise RuntimeError("Dropdown execution was interrupted; inspect before retrying.")
+            # A select or a native fill may already have mutated the page
+            # when evaluation dies, so surface both as RuntimeError
+            # (inspect before retrying), never the retryable StalePage.
+            if operation == "act":
+                action = request["action"]
+                if action["kind"] == "select":
+                    raise RuntimeError("Dropdown execution was interrupted; inspect before retrying.")
+                if action["kind"] == "fill" and action.get("input_type") in NATIVE_FILL_TYPES:
+                    raise RuntimeError("Native input execution was interrupted; inspect before retrying.")
             raise StalePage("Document changed during evaluation")
         return result.get("result", {}).get("value")
 
@@ -212,6 +228,10 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")
             # Code-owned node IDs refer to actual observed elements, never model-generated selectors.
+            # `text` lives on the request, not the action; the native fill
+            # path inside the evaluation needs it (#227). It rides along
+            # for every kind and is ignored by the others.
+            payload = {**action, "text": request.get("text")}
             target = evaluate(
                 """(action => {
               const cache=window.__jevFast, e=cache?.nodes.get(action.node);
@@ -246,9 +266,42 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
                 e.dispatchEvent(new Event('input',{bubbles:true}));
                 e.dispatchEvent(new Event('change',{bubbles:true}));
               }
+              if (action.kind==='fill' && ['date','datetime-local','time','month','week','color','range']
+                  .includes((e.type||'').toLowerCase())) {
+                // DEVIATION: Input.insertText does not commit into a
+                // native date/time/color/range control, so the generic
+                // click-and-type path silently submits these fields
+                // empty (or, for range, at its centre-click value) --
+                // upstream issue #227. Commit through the native
+                // HTMLInputElement value setter instead (so React's
+                // value tracker sees a real change), then fire the
+                // events an edit would. The browser stays the format
+                // authority: an invalid date/time string sanitises to
+                // empty. Color/range sanitise to a default instead of
+                // empty, so those two are shape-checked up front. A
+                // rejected value restores the previous one and reports
+                // distinctly -- never as a stale target the tick loop
+                // would retry with the same text forever. Still after
+                // the covered check above: no mutation before that.
+                if (typeof action.text!=='string' || !action.text.trim())
+                  return {rejected:'no value supplied for '+e.type+' input'};
+                if (e.type==='color' && !/^#[0-9a-f]{6}$/i.test(action.text))
+                  return {rejected:'not a valid color value: '+action.text};
+                if (e.type==='range' && !Number.isFinite(Number(action.text)))
+                  return {rejected:'not a valid range value: '+action.text};
+                e.focus();
+                const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;
+                const assign=v=>{ if (setter) setter.call(e,v); else e.value=v; };
+                const before=e.value;
+                assign(action.text);
+                if (!e.value) { assign(before); return {rejected:'not a valid '+e.type+' value: '+action.text}; }
+                e.dispatchEvent(new Event('input',{bubbles:true}));
+                e.dispatchEvent(new Event('change',{bubbles:true}));
+                return {x,y,filled:true,value:e.value};
+              }
               return {x,y};
             })("""
-                + json.dumps(action)
+                + json.dumps(payload)
                 + ")"
             )
             if target == {"covered": True}:
@@ -257,6 +310,14 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
                 if kind == "select":
                     raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
                 raise StalePage("Target changed. Observe again.")
+            # Native fill verdicts (#227): a rejection proved the value
+            # unusable with the field left untouched, so fail loudly like
+            # the select path instead of letting the run submit empty;
+            # a commit already happened in-page, so skip mouse/typing.
+            if target.get("rejected"):
+                raise RuntimeError(f"Native input fill rejected: {target['rejected']}")
+            if target.get("filled"):
+                return {"executed": action["id"]}
             if kind != "select":
                 x, y = target["x"], target["y"]
                 for event in ("mousePressed", "mouseReleased"):

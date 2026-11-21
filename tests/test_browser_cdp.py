@@ -355,6 +355,60 @@ def test_fill_clicks_selects_all_and_inserts_text(fake_cdp):
     assert fake_cdp.methods().index("Input.dispatchMouseEvent") < fake_cdp.methods().index("Input.insertText")
 
 
+# --- native date/time/color/range fill (upstream issue #227, fill half) ---
+# Enumeration landed earlier, but every fill went through Input.insertText,
+# which cannot commit a native segmented control: the live repro filled a
+# date field and submitted it empty with zero input/change events. These
+# pin the Python half against the fake transport; the JS half (native
+# setter, rejection restore) runs for real in tests/test_live_cdp.py.
+
+
+def test_native_fill_commits_inside_the_evaluate_without_typing(fake_cdp):
+    fake_cdp.script = [{"x": 1.0, "y": 2.0, "filled": True, "value": "2027-03-01"}]
+    action = {"kind": "fill", "node": 5, "input_type": "date", "id": "a16"}
+    assert browser_operation(act_request(action, text="2027-03-01")) == {"executed": "a16"}
+    # The value was committed in-page: no click, no select-all, no insertText.
+    assert fake_cdp.methods() == ["Runtime.evaluate"]
+    expression = fake_cdp.evaluate_params()[0]["expression"]
+    # The fill text rides in the payload; the resolver commits it through
+    # the native setter for exactly the native types.
+    assert '"text": "2027-03-01"' in expression
+    assert "HTMLInputElement.prototype" in expression
+    for input_type in ("date", "datetime-local", "time", "month", "week", "color", "range"):
+        assert f"'{input_type}'" in expression
+    # The mutation stays after the covered check, like the SELECT mutation:
+    # nothing may be committed before hittability is proven (#245).
+    assert expression.index("cache.covered") < expression.index("filled:true")
+
+
+def test_native_fill_rejection_is_loud_runtime_not_stale(fake_cdp):
+    # A rejected value leaves the field untouched (the JS restores it), so
+    # it must surface like the select path -- RuntimeError naming the bad
+    # value -- never as StalePage, which the tick would retry verbatim.
+    fake_cdp.script = [{"rejected": "not a valid date value: March 1, 2027"}]
+    action = {"kind": "fill", "node": 5, "input_type": "date", "id": "a17"}
+    with pytest.raises(RuntimeError, match="Native input fill rejected: not a valid date value"):
+        browser_operation(act_request(action, text="March 1, 2027"))
+    assert fake_cdp.methods() == ["Runtime.evaluate"]  # refused before any Input.* dispatch
+
+
+def test_evaluation_failure_during_native_fill_is_not_reported_as_stale(fake_cdp):
+    # The setter may already have committed when evaluation dies; like a
+    # select, that is inspect-before-retrying, not a safe-to-re-observe
+    # stale page. A plain text fill mutates only via Input.* afterwards,
+    # so it keeps the stale verdict.
+    failure = {"__response__": {"exceptionDetails": {"text": "destroyed"}}}
+    fake_cdp.script = [dict(failure)]
+    native = {"kind": "fill", "node": 3, "input_type": "time", "id": "a18"}
+    with pytest.raises(RuntimeError, match="Native input execution was interrupted"):
+        browser_operation(act_request(native, text="09:30"))
+
+    fake_cdp.script = [dict(failure)]
+    plain = {"kind": "fill", "node": 3, "input_type": "text", "id": "a19"}
+    with pytest.raises(StalePage):
+        browser_operation(act_request(plain, text="Zurich"))
+
+
 def test_select_acts_inside_the_evaluate_without_mouse_input(fake_cdp):
     fake_cdp.script = [{"x": 3.0, "y": 4.0}]
     action = {"kind": "select", "node": 9, "value": "1", "option_index": 2, "id": "a8"}

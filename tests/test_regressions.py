@@ -216,6 +216,21 @@ def test_field_context_distinguishes_same_labeled_fields():
     assert a["field"]["node"] == 41 and b["field"]["scope"] == "Billing address"
 
 
+def test_field_context_tells_the_helper_the_native_value_format():
+    # Upstream issue #227: native controls commit only their canonical
+    # shape and the executor now rejects anything else. The helper must
+    # see the required shape, or a goal saying "March 1" produces a
+    # value the fill can only refuse.
+    p = page()
+    date = {"label": "Check-in", "role": "textbox", "value": "", "node": 9, "input_type": "date"}
+    field = model.field_context("Check in on March 1, 2027", date, p, [])["field"]
+    assert field["input_type"] == "date"
+    assert field["required_format"].startswith("YYYY-MM-DD")
+
+    text = {"label": "City", "role": "textbox", "value": "", "node": 10, "input_type": "text"}
+    assert "required_format" not in model.field_context("g", text, p, [])["field"]
+
+
 def test_cached_text_is_not_reused_for_a_different_node(monkeypatch):
     actions = [
         {"id": "e1", "kind": "fill", "label": "Street Address", "role": "textbox", "value": "", "node": 41},

@@ -259,6 +259,21 @@ def choose(state: Page, goal: str, history: Sequence[JsonDict], settings: Settin
     return parse_choose_response(result, operations, targets, controls, body, started)
 
 
+# Native controls commit only their canonical value shape (upstream
+# issue #227): the executor rejects anything else loudly, so the helper
+# is told the shape up front instead of guessing "March 1, 2027" for a
+# date field. Keyed by the snapshot's input_type.
+_NATIVE_FORMATS = {
+    "date": "YYYY-MM-DD (e.g. 2027-03-01)",
+    "datetime-local": "YYYY-MM-DDTHH:MM (e.g. 2027-03-01T09:30)",
+    "time": "HH:MM, 24-hour (e.g. 09:30)",
+    "month": "YYYY-MM (e.g. 2027-03)",
+    "week": "YYYY-Www, ISO week (e.g. 2027-W09)",
+    "color": "#RRGGBB hex (e.g. #1a73e8)",
+    "range": "a plain number (e.g. 42)",
+}
+
+
 def field_context(goal: str, action: Action, page: Page, history: Sequence[JsonDict]) -> JsonDict:
     # DEVIATION: upstream sends only {label, role, value} for the field. Two
     # same-labeled fields (shipping vs billing "Street Address") then produce
@@ -271,6 +286,9 @@ def field_context(goal: str, action: Action, page: Page, history: Sequence[JsonD
     for key in ("node", "index", "dom_id", "name", "placeholder", "input_type", "scope"):
         if action.get(key) not in (None, ""):
             field[key] = action[key]
+    required_format = _NATIVE_FORMATS.get(str(action.get("input_type") or ""))
+    if required_format:
+        field["required_format"] = required_format
     return {
         "goal": goal,
         "field": field,

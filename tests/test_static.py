@@ -49,6 +49,79 @@ def test_all_native_value_types_reach_the_table():
     assert kinds["Suggestion row"] == "click"
 
 
+# --- native fill verdicts (upstream issue #227, fill half) -----------------
+# The CDP executor commits native controls through the value setter and
+# rejects unusable values loudly; the static backend must return the same
+# verdicts or offline runs would "fill" dates the live backend rejects.
+
+NATIVE_VALID = {
+    "date": "2027-03-01",
+    "time": "09:30",
+    "datetime-local": "2027-03-01T09:30",
+    "month": "2027-03",
+    "week": "2027-W09",
+    "color": "#1a73e8",
+    "range": "42",
+}
+NATIVE_INVALID = {
+    "date": "2027-02-30",  # right shape, impossible day
+    "time": "25:00",
+    "datetime-local": "March 1, 2027 9:30am",
+    "month": "2027-13",
+    "week": "2027-W54",
+    "color": "red",  # browsers sanitise this to #000000, never to empty
+    "range": "loud",
+}
+
+
+def _native_browser(input_type, preset=""):
+    markup = f"""<html><head><title>t</title></head><body><form>
+      <label>Field <input type="{input_type}" name="f" value="{preset}"></label>
+    </form></body></html>"""
+    return StaticBrowser.from_html(markup)
+
+
+def _fill_action(page):
+    return next(a for a in page["actions"] if a["kind"] == "fill")
+
+
+def test_native_fills_commit_canonical_values():
+    for input_type, value in NATIVE_VALID.items():
+        browser = _native_browser(input_type)
+        page = browser.observe()
+        browser.act(_fill_action(page), page, text=value)
+        assert _fill_action(browser.observe())["value"] == value, input_type
+
+
+def test_native_fill_rejects_unusable_values_without_mutating():
+    for input_type, bad in NATIVE_INVALID.items():
+        preset = NATIVE_VALID[input_type]
+        browser = _native_browser(input_type, preset=preset)
+        page = browser.observe()
+        with pytest.raises(RuntimeError, match="Native input fill rejected: not a valid"):
+            browser.act(_fill_action(page), page, text=bad)
+        # Untouched: the previous value survives and the page never moved.
+        assert _fill_action(browser.observe())["value"] == preset, input_type
+        assert browser.fresh(page) is True, input_type
+
+
+def test_native_fill_rejects_freeform_and_missing_values():
+    browser = StaticBrowser(FIXTURE)  # its Check-in field is a native date
+    page = browser.observe()
+    checkin = next(a for a in page["actions"] if a["label"] == "Check-in" and a["kind"] == "fill")
+    with pytest.raises(RuntimeError, match="not a valid date value: March 1, 2027"):
+        browser.act(checkin, page, text="March 1, 2027")
+    with pytest.raises(RuntimeError, match="no value supplied for date input"):
+        browser.act(checkin, page, text=None)
+
+
+def test_text_fill_still_accepts_any_string():
+    browser = _native_browser("text")
+    page = browser.observe()
+    browser.act(_fill_action(page), page, text="March 1, 2027")
+    assert _fill_action(browser.observe())["value"] == "March 1, 2027"
+
+
 def test_duplicate_valued_option_selects_by_index():
     # Upstream issue #216: value-based select picks the FIRST "1" option.
     browser = StaticBrowser(FIXTURE)
