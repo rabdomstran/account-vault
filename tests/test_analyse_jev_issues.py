@@ -107,6 +107,23 @@ def test_resolve_status_code_outranks_stale_docs():
     assert status == "handled" and stale is True
 
 
+def test_resolve_status_port_fixed_clears_drift_staleness():
+    # The drift review is a dated snapshot; once the living port notes
+    # record a pickup, its lingering P0/P1 queue entry is not doc lag.
+    port = analyser.parse_port_doc(
+        PORT_FRAGMENT.replace(
+            "| [#215](https://github.com/browser-use/jev-ultrafast/issues/215) | a | b |",
+            "| [#215](https://github.com/browser-use/jev-ultrafast/issues/215) | a | b |\n"
+            "| [#14](https://github.com/browser-use/jev-ultrafast/issues/14) | a | b |",
+        )
+    )
+    record = _record(14, "app not functioning")
+    status, _evidence, stale = analyser.resolve_status(
+        record, port, analyser.parse_drift_doc(DRIFT_FRAGMENT), {14: ["src/x.py:1"]}
+    )
+    assert status == "handled" and stale is False
+
+
 def test_resolve_status_open_partial_ignore_and_not_a_fix():
     port = analyser.parse_port_doc(PORT_FRAGMENT)
     drift = analyser.parse_drift_doc(DRIFT_FRAGMENT)

@@ -1,6 +1,6 @@
 # jev-ultrafast open-issue analysis — failure modes vs this port
 
-- **Generated:** 2026-11-21 19:56 UTC by `scripts/analyse_jev_issues.py` (live `gh` fetch).
+- **Generated:** 2026-11-21 20:07 UTC by `scripts/analyse_jev_issues.py` (live `gh` fetch).
 - **Corpus:** 57 open issues in [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (45 comments, 65 distinct people). PRs are out of scope.
 - **Cross-referenced against:** `docs/jev-ultrafast-port.md`, `docs/jev-ultrafast-drift-review.md`, plus `DEVIATION` comments and regression tests in `src/` / `tests/` (code outranks docs).
 - **Reproduce:** `uv run python scripts/analyse_jev_issues.py` (needs authenticated `gh`).
@@ -9,7 +9,6 @@
 
 - **27 handled, 3 partial, 10 open, 17 ignore/noise, 0 unclassified** out of 57.
 - Highest-ranked remaining work is [#67](https://github.com/browser-use/jev-ultrafast/issues/67) (decide-accuracy, hit score 31): Jev ultra fast Can't complete simple task.
-- **Docs lag the code on 3 issue(s)** (#14, #23, #227): fixed in code since the drift review / port notes were written — update the docs, not the code (see §5).
 - The hit score is an **engagement proxy** (comments, people, reactions, cross-references), not usage telemetry — the tracker has none. Formula in §7.
 
 ## 1. Work queue (ranked — start here)
@@ -99,7 +98,7 @@ The snapshot's element table misses or mislabels controls, so the right action i
 | [#23](https://github.com/browser-use/jev-ultrafast/issues/23) Element table misses clickable non-native elements,… | handled | 2 | code: src/account_vault/snapshot.js:56, src/account_vault/snapshot.js:82, src/account_vault/snapshot.js:84; port notes: Fixed table; drift review §8; drift review P1 |
 | [#215](https://github.com/browser-use/jev-ultrafast/issues/215) Native input types (date, time, datetime-local, mon… | handled | 0 | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:432; port notes: Fixed table; drift review §8 |
 | [#218](https://github.com/browser-use/jev-ultrafast/issues/218) Bare contenteditable / contenteditable="" elements… | handled | 0 | code: src/account_vault/snapshot.js:51, tests/test_static.py:28; port notes: Fixed table; drift review §8 |
-| [#227](https://github.com/browser-use/jev-ultrafast/issues/227) date inputs are never enumerated, so the agent cann… | handled | 0 | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:432; port notes: Fixed table; drift review §8; drift review P0 · residual: enumeration in port notes; CDP native-commit landed later in code |
+| [#227](https://github.com/browser-use/jev-ultrafast/issues/227) date inputs are never enumerated, so the agent cann… | handled | 0 | code: src/account_vault/model.py:122, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:432; port notes: Fixed table; drift review §8; drift review P0 |
 
 ### execute-act
 
@@ -145,7 +144,7 @@ Chrome/CDP harness behaviour: profile attach, proxies, tab painting, hangs and d
 | Issue | Status | Comments | Evidence / note |
 |---|---|---|---|
 | [#5](https://github.com/browser-use/jev-ultrafast/issues/5) Fix Windows static asset decoding in demo server | handled | 2 | code: src/account_vault/demo.py:160; port notes: Fixed table; drift review §8 |
-| [#14](https://github.com/browser-use/jev-ultrafast/issues/14) app not functioning | handled | 3 | code: src/account_vault/browser.py:152, src/account_vault/browser.py:542, src/account_vault/static/app.js:104; drift review P0; port notes: deliberately NOT fixed |
+| [#14](https://github.com/browser-use/jev-ultrafast/issues/14) app not functioning | handled | 3 | code: src/account_vault/browser.py:152, src/account_vault/browser.py:542, src/account_vault/static/app.js:104; port notes: Fixed table; drift review P0; port notes: deliberately NOT fixed |
 | [#16](https://github.com/browser-use/jev-ultrafast/issues/16) Setup friction: SOCKS proxy crash on startup; brows… | partial | 0 | code: src/account_vault/browser.py:23, src/account_vault/browser.py:46, src/account_vault/model.py:42; port notes: Fixed table; drift review §8; drift review P0; drift review P1; port notes: deliberately NOT fixed · residual: attach default fixed in code; SOCKS first-call crash remains (httpx lacks the socks extra) |
 | [#51](https://github.com/browser-use/jev-ultrafast/issues/51) Windows: owned tab is backgrounded, modal menus do… | open | 2 | drift review P1; port notes: deliberately NOT fixed |
 
@@ -190,7 +189,7 @@ Each row cites where the handling is recorded. Code citations are `file:line` at
 | [#1](https://github.com/browser-use/jev-ultrafast/issues/1) Library API: first observation can return an empty… | loop-control | code: tests/test_regressions.py:286, tests/test_regressions.py:462; port notes: Fixed table; drift review §8 |
 | [#5](https://github.com/browser-use/jev-ultrafast/issues/5) Fix Windows static asset decoding in demo server | browser-cdp | code: src/account_vault/demo.py:160; port notes: Fixed table; drift review §8 |
 | [#11](https://github.com/browser-use/jev-ultrafast/issues/11) Support LLMTR as a text-helper provider | wire-providers | code: src/account_vault/model.py:351; port notes: Fixed table; drift review §8 |
-| [#14](https://github.com/browser-use/jev-ultrafast/issues/14) app not functioning | browser-cdp | code: src/account_vault/browser.py:152, src/account_vault/browser.py:542, src/account_vault/static/app.js:104; drift review P0; port notes: deliberately NOT fixed |
+| [#14](https://github.com/browser-use/jev-ultrafast/issues/14) app not functioning | browser-cdp | code: src/account_vault/browser.py:152, src/account_vault/browser.py:542, src/account_vault/static/app.js:104; port notes: Fixed table; drift review P0; port notes: deliberately NOT fixed |
 | [#23](https://github.com/browser-use/jev-ultrafast/issues/23) Element table misses clickable non-native elements,… | perceive-enumeration | code: src/account_vault/snapshot.js:56, src/account_vault/snapshot.js:82, src/account_vault/snapshot.js:84; port notes: Fixed table; drift review §8; drift review P1 |
 | [#36](https://github.com/browser-use/jev-ultrafast/issues/36) Missing TEXT_MODEL_API_KEY crashes mid-run; code de… | wire-providers | code: src/account_vault/agent.py:138, src/account_vault/demo.py:53, src/account_vault/model.py:395; port notes: Fixed table; drift review §8 |
 | [#55](https://github.com/browser-use/jev-ultrafast/issues/55) Model-call budget (MAX_STEPS * 2) is undocumented a… | loop-control | code: src/account_vault/agent.py:316, src/account_vault/demo.py:54, src/account_vault/questions.py:43; port notes: Fixed table; drift review §8 |
@@ -217,11 +216,7 @@ Each row cites where the handling is recorded. Code citations are `file:line` at
 
 ## 5. Doc-vs-code disagreements (fix the docs)
 
-These read as open in the port notes or drift review but are fixed in code. Verify, then update the docs:
-
-- [#14](https://github.com/browser-use/jev-ultrafast/issues/14) app not functioning — code: src/account_vault/browser.py:152, src/account_vault/browser.py:542, src/account_vault/static/app.js:104; drift review P0; port notes: deliberately NOT fixed.
-- [#23](https://github.com/browser-use/jev-ultrafast/issues/23) Element table misses clickable non-native elements, so suggestion rows are unre… — code: src/account_vault/snapshot.js:56, src/account_vault/snapshot.js:82, src/account_vault/snapshot.js:84; port notes: Fixed table; drift review §8; drift review P1.
-- [#227](https://github.com/browser-use/jev-ultrafast/issues/227) date inputs are never enumerated, so the agent cannot fill them — code: src/account_vault/model.py:122, src/account_vault/snapshot.js:75, src/account_vault/static_dom.py:432; port notes: Fixed table; drift review §8; drift review P0.
+None found at generation time.
 
 ## 6. Outside the tracker
 
