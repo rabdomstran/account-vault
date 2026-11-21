@@ -123,9 +123,12 @@ def test_init_creates_target_configures_and_waits_for_ready(fake_cdp):
     assert opening[2][1]["session_id"] == "S1"
     assert opening[3] == (
         "Emulation.setFocusEmulationEnabled",
-        {"session_id": "S1", "enabled": True},
+        {"session_id": "S1", "_response_timeout": 30, "enabled": True},
     )
-    assert opening[4] == ("Page.navigate", {"session_id": "S1", "url": "https://example.test/page"})
+    assert opening[4] == (
+        "Page.navigate",
+        {"session_id": "S1", "_response_timeout": 30, "url": "https://example.test/page"},
+    )
     # Polled readyState until complete: 3 evaluations.
     assert [p["expression"] for p in fake_cdp.evaluate_params()] == ["document.readyState"] * 3
 
@@ -220,7 +223,7 @@ def test_init_opt_in_warns_when_a_stale_daemon_ignores_the_pin(fake_cdp, monkeyp
 
 def test_call_scopes_every_method_to_the_session(fake_cdp):
     bare_browser().call("Page.reload", ignoreCache=True)
-    assert fake_cdp.calls == [("Page.reload", {"session_id": "S1", "ignoreCache": True})]
+    assert fake_cdp.calls == [("Page.reload", {"session_id": "S1", "_response_timeout": 30, "ignoreCache": True})]
 
 
 def test_evaluate_returns_value_and_maps_exceptions_to_stale(fake_cdp):
@@ -255,7 +258,8 @@ def test_observe_retries_stale_reads_then_succeeds(monkeypatch):
     assert result["marker"] == "M1"
     assert operation.call_count == 3
     request = operation.call_args.args[0]
-    assert request == {"operation": "observe", "session": "S1", "screenshot": False}
+    # No screenshot requested, so no tab activation either (#43/#16).
+    assert request == {"operation": "observe", "session": "S1", "screenshot": False, "activate": False}
 
 
 def test_observe_raises_after_ten_stale_reads(monkeypatch):
@@ -305,6 +309,104 @@ def test_observe_of_a_navigating_document_is_stale(fake_cdp):
     fake_cdp.script = [None]  # snapshot.js returns null mid-navigation
     with pytest.raises(StalePage, match="Document is navigating"):
         browser_operation({"operation": "observe", "session": "S1", "screenshot": False})
+
+
+# --- CDP deadlines + screenshot degradation (#14, PRs #97/#19/#43) ----------
+# browser-harness defaults every IPC call to 5s. Slow navigations and
+# evaluations legitimately exceed that, while a screenshot on a throttled
+# background tab can stall indefinitely -- and used to take the whole
+# (already-completed) structured observation down with it. Deadlines are
+# explicit now (30s session-wide, 5s for the optional capture, the shape
+# from branch codex/bu-bench-eval-v2 a2676ee/6cf62ca), capture failure by
+# timeout degrades to screenshot=None, and no timeout is ever retried.
+
+
+class TimingOutCapture(FakeCdp):
+    """FakeCdp whose capture raises the way the harness IPC layer does."""
+
+    def __call__(self, method, **params):
+        if method == "Page.captureScreenshot":
+            self.calls.append((method, params))
+            raise TimeoutError("Page.captureScreenshot timed out after 5s waiting for the daemon")
+        return super().__call__(method, **params)
+
+
+@pytest.fixture
+def timing_out_cdp(fake_cdp, monkeypatch):
+    fake = TimingOutCapture()
+    fake.ensure_daemon = fake_cdp.ensure_daemon
+    fake.browser_kind = fake_cdp.browser_kind
+    monkeypatch.setattr(browser, "_cdp", fake)
+    return fake
+
+
+def test_screenshot_timeout_preserves_the_structured_observation(timing_out_cdp):
+    result = browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
+    assert result["marker"] == "M1" and result["actions"] == INFO["actions"]
+    assert result["screenshot"] is None  # explicit: requested but unavailable
+    capture = next(p for m, p in timing_out_cdp.calls if m == "Page.captureScreenshot")
+    assert capture["_response_timeout"] == 5  # the optional capture keeps its short deadline
+
+
+def test_screenshot_failure_other_than_timeout_still_propagates(fake_cdp, monkeypatch):
+    original = fake_cdp.__call__
+
+    def broken(method, **params):
+        if method == "Page.captureScreenshot":
+            raise RuntimeError("daemon exploded")
+        return original(method, **params)
+
+    monkeypatch.setattr(browser, "_cdp", broken)
+    with pytest.raises(RuntimeError, match="daemon exploded"):
+        browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
+
+
+def test_session_calls_carry_the_thirty_second_deadline(fake_cdp):
+    fake_cdp.script = ["complete"]
+    CdpBrowser("https://example.test/")  # navigate + evaluates go through call()
+    browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
+    deadlines = {m: p["_response_timeout"] for m, p in fake_cdp.calls if "session_id" in p}
+    assert deadlines["Page.navigate"] == 30
+    assert deadlines["Runtime.evaluate"] == 30
+    assert deadlines["Page.captureScreenshot"] == 5
+
+
+def test_timed_out_mutation_is_never_retried(fake_cdp, monkeypatch):
+    # A deadline is not a retry hint: the input may already have landed.
+    navigations = Mock(side_effect=TimeoutError("Page.navigate timed out after 30s waiting for the daemon"))
+    monkeypatch.setattr(browser, "_cdp", navigations)
+    with pytest.raises(TimeoutError, match="timed out"):
+        bare_browser().call("Page.navigate", url="https://example.test/")
+    navigations.assert_called_once_with(
+        "Page.navigate", session_id="S1", _response_timeout=30, url="https://example.test/"
+    )
+
+
+def test_capture_activates_the_tab_only_when_asked(fake_cdp):
+    browser_operation({"operation": "observe", "session": "S1", "screenshot": True, "activate": True})
+    assert fake_cdp.methods().index("Page.bringToFront") < fake_cdp.methods().index("Page.captureScreenshot")
+
+    fake_cdp.calls.clear()
+    browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
+    assert "Page.bringToFront" not in fake_cdp.methods()
+
+
+def test_observe_requests_activation_only_on_a_dedicated_kind(monkeypatch):
+    operation = Mock(return_value=dict(INFO))
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    instance = bare_browser()
+
+    instance.browser_kind = "cdp"
+    instance.observe(screenshot=True)
+    assert operation.call_args.args[0]["activate"] is True
+
+    instance.browser_kind = "local"  # opted-in everyday Chrome: never steal focus
+    instance.observe(screenshot=True)
+    assert operation.call_args.args[0]["activate"] is False
+
+    instance.browser_kind = "cdp"
+    instance.observe(screenshot=False)  # nothing to capture, nothing to activate
+    assert operation.call_args.args[0]["activate"] is False
 
 
 # --- fresh(): per-node guards for click/select, marker otherwise ------------
@@ -396,7 +498,15 @@ def test_scroll_dispatches_a_mouse_wheel_and_nothing_else(fake_cdp):
     assert fake_cdp.calls == [
         (
             "Input.dispatchMouseEvent",
-            {"session_id": "S1", "type": "mouseWheel", "x": 550, "y": 650, "deltaX": 0, "deltaY": 600},
+            {
+                "session_id": "S1",
+                "_response_timeout": 30,
+                "type": "mouseWheel",
+                "x": 550,
+                "y": 650,
+                "deltaX": 0,
+                "deltaY": 600,
+            },
         )
     ]
 
@@ -434,7 +544,7 @@ def test_fill_clicks_selects_all_and_inserts_text(fake_cdp):
     assert keys[0]["commands"] == ["selectAll"] and keys[0]["modifiers"] == modifiers
     assert keys[0]["key"] == "a" and keys[0]["code"] == "KeyA"
     inserts = [p for m, p in fake_cdp.calls if m == "Input.insertText"]
-    assert inserts == [{"session_id": "S1", "text": "Zurich"}]
+    assert inserts == [{"session_id": "S1", "_response_timeout": 30, "text": "Zurich"}]
     # Mouse click into the field precedes the keyboard work.
     assert fake_cdp.methods().index("Input.dispatchMouseEvent") < fake_cdp.methods().index("Input.insertText")
 

@@ -149,6 +149,23 @@ def _verify_daemon_kind(opt_in: bool) -> str | None:
 # the act resolver below. The JS list there mirrors this set.
 NATIVE_FILL_TYPES = frozenset({"date", "datetime-local", "time", "month", "week", "color", "range"})
 
+# DEVIATION: explicit CDP IPC deadlines (upstream issue #14, PRs #97/#19,
+# and branch codex/bu-bench-eval-v2 commits a2676ee/6cf62ca, diffed
+# before adopting). browser-harness defaults every call to 5s, which
+# slow navigations/evaluations legitimately exceed; session calls get
+# 30s -- a deadline, not a delay, and never a reason to retry: a timed-
+# out mutation has an unknown result and propagates for inspection.
+# Screenshots keep the original short 5s: capture on a throttled
+# background tab can stall indefinitely, and the observation degrades
+# to no-screenshot below instead of hanging or dying with the run.
+CDP_RESPONSE_TIMEOUT = 30
+SCREENSHOT_RESPONSE_TIMEOUT = 5
+
+
+def _deadline(method: str) -> int:
+    return SCREENSHOT_RESPONSE_TIMEOUT if method == "Page.captureScreenshot" else CDP_RESPONSE_TIMEOUT
+
+
 # Atomically read visible content and controls, preserving actual DOM node identity.
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text(encoding="utf-8")
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
@@ -198,7 +215,7 @@ class CdpBrowser:
             time.sleep(0.02)
 
     def call(self, method: str, **params: Any) -> Any:
-        return cdp(method, session_id=self.session, **params)
+        return cdp(method, session_id=self.session, _response_timeout=_deadline(method), **params)
 
     def evaluate(self, expression: str) -> Any:
         response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
@@ -241,9 +258,16 @@ class CdpBrowser:
                 )
             except RuntimeError:
                 pass
+        # On a dedicated/cloud daemon the owned tab may be activated
+        # before capture (a hidden tab emits no compositor frame and
+        # the capture stalls -- upstream PR #43); on an opted-in local
+        # (everyday) browser it must never steal the foreground (#16).
+        activate = screenshot and getattr(self, "browser_kind", None) in {"cdp", "cloud"}
         for attempt in range(10):
             try:
-                result = browser_operation({"operation": "observe", "session": self.session, "screenshot": screenshot})
+                result = browser_operation(
+                    {"operation": "observe", "session": self.session, "screenshot": screenshot, "activate": activate}
+                )
             except StalePage:
                 if attempt == 9:
                     raise
@@ -308,7 +332,7 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
     session = request["session"]
 
     def call(method: str, **params: Any) -> Any:
-        return cdp(method, session_id=session, **params)
+        return cdp(method, session_id=session, _response_timeout=_deadline(method), **params)
 
     def evaluate(expression: str) -> Any:
         result = call("Runtime.evaluate", expression=expression, returnByValue=True)
@@ -452,5 +476,22 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
         raise StalePage("Document is navigating")
     info["fingerprint"] = fingerprint(info)
     if request.get("screenshot", True):
-        info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
+        if request.get("activate"):
+            # Best effort (#43): a hidden tab never produces a frame to
+            # capture. Failure here must not pre-empt the capture's own
+            # verdict below.
+            try:
+                call("Page.bringToFront")
+            except (RuntimeError, TimeoutError):
+                pass
+        try:
+            info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
+        except TimeoutError:
+            # DEVIATION (#14, PR #19): screenshots never drive the loop,
+            # so a stalled capture degrades this observation to
+            # no-screenshot (explicit None, distinct from "not
+            # requested") instead of discarding the completed
+            # structured read and pausing the run. Other CDP failures
+            # still propagate.
+            info["screenshot"] = None
     return info
