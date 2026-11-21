@@ -161,6 +161,22 @@ NATIVE_FILL_TYPES = frozenset({"date", "datetime-local", "time", "month", "week"
 CDP_RESPONSE_TIMEOUT = 30
 SCREENSHOT_RESPONSE_TIMEOUT = 5
 
+# DEVIATION: await wheel-scroll commit before observing (interaction of
+# PR #212's proven-progress rule with PR #209's no-op drop, found by the
+# CI live gate). A dispatched mouseWheel commits its scroll offset to
+# the main thread asynchronously; on an idle headless/background tab
+# that commit can lag the post-input settle (2 rAF / 50ms, built for
+# autocomplete popups) by hundreds of ms. Observe then reads scrollY
+# unchanged, history records a no-op, #209 drops scroll_down from the
+# next offer, and the run blocks mid-page with the target still below
+# (Linux headless Chrome 157: scrolls read 0->560 then 560->560, while a
+# live poll seconds later showed 1120). After a scroll act, poll
+# scrollY until it moves in the scrolled direction or this deadline
+# passes; a genuine boundary no-op pays the deadline once, then the
+# existing no-op machinery proceeds exactly as before.
+SCROLL_SETTLE_TIMEOUT = 3.0
+SCROLL_SETTLE_POLL = 0.05
+
 
 def _deadline(method: str) -> int:
     return SCREENSHOT_RESPONSE_TIMEOUT if method == "Page.captureScreenshot" else CDP_RESPONSE_TIMEOUT
@@ -194,6 +210,10 @@ class CdpBrowser:
     # page's offered set is known wrong (it still lists the covered node)
     # even though its occlusion-blind marker still matches.
     _offer_stale: bool
+    # Viewport Y captured by act() for a scroll, consumed by the next
+    # observe()'s commit wait (see SCROLL_SETTLE_TIMEOUT). None when the
+    # last act was not a scroll or its page carried no scroll position.
+    _scroll_before_y: float | None
 
     def __init__(self, url: str) -> None:
         opt_in = _guard_attach()  # #16: refuse/warn before any daemon work
@@ -202,6 +222,7 @@ class CdpBrowser:
         self.browser_kind = _verify_daemon_kind(opt_in)
         self.after_input = None
         self._offer_stale = False
+        self._scroll_before_y = None
         self.target: str | None = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
@@ -224,8 +245,10 @@ class CdpBrowser:
         return response.get("result", {}).get("value")
 
     def observe(self, screenshot: bool = True) -> dict[str, Any]:
+        acted: dict[str, Any] | None = None
         if getattr(self, "after_input", None):
             action, self.after_input = self.after_input, None
+            acted = action
             # This is read-only and happens after execution was logged, even if navigation interrupts it.
             try:
                 self.call(
@@ -258,6 +281,10 @@ class CdpBrowser:
                 )
             except RuntimeError:
                 pass
+        before_y = getattr(self, "_scroll_before_y", None)
+        self._scroll_before_y = None
+        if acted is not None and acted.get("kind") == "scroll" and before_y is not None:
+            self._await_scroll_commit(before_y, acted.get("delta") or 0)
         # On a dedicated/cloud daemon the owned tab may be activated
         # before capture (a hidden tab emits no compositor frame and
         # the capture stalls -- upstream PR #43); on an opted-in local
@@ -278,6 +305,24 @@ class CdpBrowser:
                 self._offer_stale = False
                 return result
         raise StalePage("Page did not settle")
+
+    def _await_scroll_commit(self, before_y: float, delta: float) -> None:
+        """Poll until a dispatched wheel scroll commits (see the
+        SCROLL_SETTLE_TIMEOUT deviation). Movement in the scrolled
+        direction is the exit; a still viewport at the deadline is a
+        genuine no-op and the caller observes it as one."""
+        if not delta:
+            return
+        deadline = time.monotonic() + SCROLL_SETTLE_TIMEOUT
+        while time.monotonic() < deadline:
+            try:
+                y = self.evaluate("window.scrollY")
+            except (RuntimeError, StalePage):
+                return  # navigating/interrupted; the snapshot retry owns it
+            if isinstance(y, (int, float)) and not isinstance(y, bool):
+                if (delta > 0 and y > before_y) or (delta < 0 and y < before_y):
+                    return
+            time.sleep(SCROLL_SETTLE_POLL)
 
     def fresh(self, page: dict[str, Any], action: dict[str, Any] | None = None) -> bool:
         if action is not None and action["kind"] in {"click", "select"}:
@@ -310,6 +355,13 @@ class CdpBrowser:
             self._offer_stale = True  # cached page offers a now-hidden node
             raise
         self.after_input = action if action["kind"] != "wait" else None
+        scroll = page.get("scroll")
+        before_y = scroll.get("y") if isinstance(scroll, dict) else None
+        self._scroll_before_y = (
+            float(before_y)
+            if action["kind"] == "scroll" and isinstance(before_y, (int, float)) and not isinstance(before_y, bool)
+            else None
+        )
         return result
 
     def close(self) -> None:

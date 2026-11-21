@@ -293,6 +293,67 @@ def test_observe_ignores_a_settle_interrupted_by_navigation(fake_cdp):
     assert result["marker"] == "M1"
 
 
+# --- scroll-commit settle (#212/#209 interaction, found by the live gate) ---
+# A dispatched mouseWheel commits asynchronously; on an idle headless
+# tab the commit lags the post-input settle, so observe read scrollY
+# unchanged, history recorded a no-op, and #209's drop removed
+# scroll_down for the rest of the page -- the deep-scroll live test
+# blocked mid-page on Linux while passing on macOS (a later poll showed
+# the wheel had in fact landed). Observe after a scroll now polls
+# scrollY until it moves, or the settle deadline passes.
+
+
+def test_observe_after_scroll_waits_for_the_wheel_to_commit(fake_cdp, monkeypatch):
+    instance = bare_browser()
+    instance.after_input = {"kind": "scroll", "delta": 560}
+    instance._scroll_before_y = 0.0
+    monkeypatch.setattr(browser.time, "sleep", lambda _s: None)
+    # Settle promise, two uncommitted reads, the committed offset; the
+    # snapshot read then falls through to the fake's default INFO.
+    fake_cdp.script = [None, 0, 0, 560]
+    result = instance.observe(screenshot=False)
+
+    expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
+    assert expressions[1:-1] == ["window.scrollY"] * 3
+    assert expressions[-1] == browser.READ_STATE
+    assert result["marker"] == "M1"
+    assert instance._scroll_before_y is None  # consumed, not sticky
+
+
+def test_observe_after_a_dead_scroll_still_observes_at_the_deadline(fake_cdp, monkeypatch):
+    instance = bare_browser()
+    instance.after_input = {"kind": "scroll", "delta": 560}
+    instance._scroll_before_y = 0.0
+    monkeypatch.setattr(browser, "SCROLL_SETTLE_TIMEOUT", 0.12)
+    monkeypatch.setattr(browser.time, "sleep", lambda _s: None)
+    # Deadline base + two in-deadline checks, then past the deadline:
+    # exactly two polls (both unmoved -- a genuine boundary no-op), and
+    # the snapshot proceeds so the no-op machinery sees it as before.
+    monkeypatch.setattr(browser.time, "monotonic", Mock(side_effect=[0.0, 0.0, 0.0] + [1.0] * 10))
+    fake_cdp.script = [None, 0, 0]
+    result = instance.observe(screenshot=False)
+
+    expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
+    assert expressions[1:-1] == ["window.scrollY"] * 2
+    assert expressions[-1] == browser.READ_STATE
+    assert result["marker"] == "M1"
+
+
+def test_act_scroll_records_the_pre_scroll_viewport_for_observe(monkeypatch):
+    operation = Mock(return_value={"executed": "scroll_down"})
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    instance = bare_browser()
+    monkeypatch.setattr(instance, "fresh", Mock(return_value=True))
+
+    action = {"kind": "scroll", "id": "scroll_down", "delta": 560}
+    instance.act(action, page={"scroll": {"y": 560, "height": 2862}})
+    assert instance.after_input is action
+    assert instance._scroll_before_y == 560.0
+
+    instance.act({"kind": "click", "node": 1, "id": "e1"}, page={"scroll": {"y": 560}})
+    assert instance._scroll_before_y is None  # only scrolls arm the wait
+
+
 def test_observe_screenshot_is_captured_only_when_asked(fake_cdp):
     with_shot = browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
     assert with_shot["screenshot"] == "JPEGDATA"
