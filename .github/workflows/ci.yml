@@ -13,32 +13,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: ruff + pytest (Python ${{ matrix.python-version }})
+  lint:
+    name: lint (ruff check + format)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        # Both ends of requires-python = ">=3.12,<3.14" in pyproject.toml.
-        python-version: ["3.12", "3.13"]
-
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # setup-uv persists uv's cache itself: the cache key is computed
       # from hashes of the files matching cache-dependency-glob, so no
-      # hand-rolled actions/cache key is needed. cache-suffix keeps the
-      # two matrix jobs from racing to save under the same key.
+      # hand-rolled actions/cache key is needed.
       # See https://docs.astral.sh/uv/guides/integration/github/#caching
       - name: Install uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.12.1"
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: "**/uv.lock"
-          cache-suffix: ${{ matrix.python-version }}
+          cache-suffix: lint
 
       # --locked: fail if uv.lock is out of date with pyproject.toml.
       # No --all-extras: the `local`/`perception` extras pull torch and
@@ -46,13 +39,112 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --dev
 
-      - name: Ruff
+      - name: Ruff check
         run: uv run ruff check .
 
       - name: Ruff format
         run: uv run ruff format --check .
 
+  test:
+    name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of requires-python = ">=3.12,<3.14" in pyproject.toml,
+        # on Linux and macOS (the socket test must pass on both).
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # cache-suffix keeps matrix jobs from racing to save one cache key.
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.12.1"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: ${{ matrix.os }}-${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --locked --dev
+
       # -rs: print skip reasons so it is visible in the log that the
       # only skipped tests are the opt-in live-CDP pair.
-      - name: Test
-        run: uv run pytest -rs
+      # Coverage floor: suite measures 81% (uncovered lines are mostly
+      # the live-CDP paths in browser.py and the __main__ CLI); 80 is
+      # the regression floor, not an aspiration.
+      - name: Test with coverage
+        run: >-
+          uv run pytest -rs
+          --cov=account_vault
+          --cov-report=term-missing
+          --cov-fail-under=80
+
+  build:
+    name: build (wheel + sdist assets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.12.1"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: build
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      # The inspector and static browser load non-Python files from the
+      # package directory at runtime (static/, snapshot.js). Guard the
+      # packaging: every tracked non-.py package file must ship in both
+      # distributions. Expected files are derived from the source tree,
+      # so newly added assets are covered automatically.
+      - name: Verify package assets ship in both distributions
+        run: |
+          uv run --no-project python - <<'PY'
+          import glob, tarfile, zipfile
+          from pathlib import Path
+
+          pkg = Path("src/account_vault")
+          expected = sorted(
+              str(p.relative_to(pkg))
+              for p in pkg.rglob("*")
+              if p.is_file() and p.suffix not in {".py", ".pyc"} and "__pycache__" not in p.parts
+          )
+          assert expected, "no package assets found in source tree"
+          wheel_names = set(zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist())
+          missing = [rel for rel in expected if f"account_vault/{rel}" not in wheel_names]
+          sdist_names = set(tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames())
+          missing += [rel for rel in expected
+                      if not any(n.endswith(f"src/account_vault/{rel}") for n in sdist_names)]
+          assert not missing, f"assets missing from distributions: {missing}"
+          print(f"OK: all {len(expected)} assets in wheel and sdist: {expected}")
+          PY
+
+      # And the wheel must actually install with assets on disk where
+      # demo.py/static_dom.py look for them (package-relative paths).
+      - name: Verify wheel installs with assets in place
+        run: |
+          uv pip install --no-deps --target /tmp/wheel-check dist/*.whl
+          test -f /tmp/wheel-check/account_vault/snapshot.js
+          test -f /tmp/wheel-check/account_vault/static/index.html
+          test -f /tmp/wheel-check/account_vault/static/app.js
+          test -f /tmp/wheel-check/account_vault/static/style.css
+          test -f /tmp/wheel-check/account_vault/static/fixture.html
+          test -f /tmp/wheel-check/account_vault/static/catalog.html
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
