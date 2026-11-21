@@ -438,3 +438,17 @@ def test_run_ends_blocked_at_decision_budget_without_raising():
     assert runner.state["status"] == "blocked"
     assert len(runner.state["decisions"]) == MAX_DECISIONS
     assert states[-1]["status"] == "blocked"
+
+
+def test_reasoning_field_matches_the_deepseek_host_exactly():
+    # CodeQL alert #1 (py/incomplete-url-substring-sanitization): the
+    # provider special-case must key on the URL hostname, so lookalike
+    # URLs that merely contain the substring don't take the DeepSeek
+    # branch (and the real host always does).
+    effort = Settings(text_model_reasoning="low", text_model_base_url="https://api.deepseek.com/v1")
+    assert model._reasoning_field(effort) == {"thinking": {"type": "disabled"}}
+    for url in ("https://evil.test/api.deepseek.com/", "https://api.deepseek.com.evil.test/v1"):
+        lookalike = Settings(text_model_reasoning="low", text_model_base_url=url)
+        assert model._reasoning_field(lookalike) == {"reasoning": {"effort": "low"}}, url
+    assert model._reasoning_field(Settings(text_model_reasoning="omit")) == {}
+    assert model._reasoning_field(Settings(text_model_reasoning="none")) == {"reasoning": {"enabled": False}}
