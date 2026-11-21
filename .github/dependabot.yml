@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # Python dependencies in pyproject.toml / uv.lock. Dependabot opens
+  # one PR per update; CI (incl. the coverage and e2e gates) plus
+  # branch protection decide whether it can merge.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:17"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "deps"
+
+  # Pinned GitHub Actions (checkout, setup-uv, upload-artifact).
+  # Minor/patch bumps are grouped to keep noise down; majors arrive
+  # individually so their CI result is unambiguous.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:17"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

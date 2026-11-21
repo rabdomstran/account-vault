@@ -1,0 +1,393 @@
+"""CdpBrowser / browser_operation against a scripted fake CDP transport.
+
+browser.py keeps `cdp()` as an indirection "so tests can monkeypatch
+account_vault.browser.cdp" — these tests use that seam (via the cached
+_harness globals) to exercise the live-CDP paths without Chrome: target
+setup, readiness waiting, freshness guards, stale retries, post-input
+settling, and every Input.* dispatch in the act executor, including its
+no-retry error semantics. The transport itself (a real daemon + Chrome)
+stays covered by the opt-in tests/test_live_cdp.py.
+"""
+
+import sys
+import types
+from unittest.mock import Mock
+
+import pytest
+
+import account_vault.browser as browser
+from account_vault.browser import CdpBrowser, StalePage, browser_operation
+
+INFO = {
+    "url": "https://example.test/",
+    "title": "Example",
+    "text": "hello",
+    "actions": [],
+    "scroll": 0,
+    "marker": "M1",
+    "page_key": "K1",
+    "guards": {},
+}
+
+
+class FakeCdp:
+    """Records calls; Runtime.evaluate answers from a script queue."""
+
+    def __init__(self):
+        self.calls = []
+        self.script = []  # values, exceptions, or {"__response__": raw}
+
+    def __call__(self, method, **params):
+        self.calls.append((method, params))
+        if method == "Target.createTarget":
+            return {"targetId": "T1"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "S1"}
+        if method == "Page.captureScreenshot":
+            return {"data": "JPEGDATA"}
+        if method == "Runtime.evaluate":
+            if self.script:
+                item = self.script.pop(0)
+                if isinstance(item, BaseException):
+                    raise item
+                if isinstance(item, dict) and "__response__" in item:
+                    return item["__response__"]
+                return {"result": {"value": dict(item) if isinstance(item, dict) else item}}
+            return {"result": {"value": dict(INFO)}}
+        return {}
+
+    def methods(self):
+        return [method for method, _ in self.calls]
+
+    def evaluate_params(self):
+        return [params for method, params in self.calls if method == "Runtime.evaluate"]
+
+
+@pytest.fixture
+def fake_cdp(monkeypatch):
+    fake = FakeCdp()
+    ensure_daemon = Mock(name="ensure_daemon")
+    monkeypatch.setattr(browser, "_cdp", fake)
+    monkeypatch.setattr(browser, "_ensure_daemon", ensure_daemon)
+    fake.ensure_daemon = ensure_daemon
+    return fake
+
+
+def bare_browser():
+    instance = CdpBrowser.__new__(CdpBrowser)
+    instance.session = "S1"
+    instance.target = None
+    return instance
+
+
+def test_harness_lazy_import_is_cached(monkeypatch):
+    sentinel_cdp, sentinel_ensure = Mock(name="cdp"), Mock(name="ensure_daemon")
+    package = types.ModuleType("browser_harness")
+    admin = types.ModuleType("browser_harness.admin")
+    admin.ensure_daemon = sentinel_ensure
+    helpers = types.ModuleType("browser_harness.helpers")
+    helpers.cdp = sentinel_cdp
+    package.admin, package.helpers = admin, helpers
+    monkeypatch.setitem(sys.modules, "browser_harness", package)
+    monkeypatch.setitem(sys.modules, "browser_harness.admin", admin)
+    monkeypatch.setitem(sys.modules, "browser_harness.helpers", helpers)
+    monkeypatch.setattr(browser, "_cdp", None)
+    monkeypatch.setattr(browser, "_ensure_daemon", None)
+
+    assert browser._harness() == (sentinel_cdp, sentinel_ensure)
+    # Second call serves the cache without re-importing.
+    monkeypatch.delitem(sys.modules, "browser_harness.helpers")
+    assert browser._harness() == (sentinel_cdp, sentinel_ensure)
+
+
+def test_init_creates_target_configures_and_waits_for_ready(fake_cdp):
+    fake_cdp.script = ["loading", "interactive", "complete"]
+    instance = CdpBrowser("https://example.test/page")
+
+    fake_cdp.ensure_daemon.assert_called_once_with()
+    assert instance.target == "T1" and instance.session == "S1"
+    opening = fake_cdp.calls[:5]
+    assert opening[0] == ("Target.createTarget", {"url": "about:blank", "background": True})
+    assert opening[1][0] == "Target.attachToTarget"
+    assert opening[1][1]["targetId"] == "T1" and opening[1][1]["flatten"] is True
+    assert opening[2][0] == "Emulation.setDeviceMetricsOverride"
+    assert opening[2][1]["width"] == 1120 and opening[2][1]["height"] == 780
+    assert opening[2][1]["session_id"] == "S1"
+    assert opening[3] == (
+        "Emulation.setFocusEmulationEnabled",
+        {"session_id": "S1", "enabled": True},
+    )
+    assert opening[4] == ("Page.navigate", {"session_id": "S1", "url": "https://example.test/page"})
+    # Polled readyState until complete: 3 evaluations.
+    assert [p["expression"] for p in fake_cdp.evaluate_params()] == ["document.readyState"] * 3
+
+
+def test_init_gives_up_waiting_after_the_deadline(fake_cdp, monkeypatch):
+    ticks = iter([0.0, 100.0])  # deadline = 0+15; first loop check is past it
+
+    def monotonic():
+        return next(ticks, 1000.0)
+
+    monkeypatch.setattr(browser.time, "monotonic", monotonic)
+    instance = CdpBrowser("https://example.test/slow")
+    assert instance.session == "S1"  # construction completes regardless
+    assert fake_cdp.evaluate_params() == []  # never even polled
+
+
+def test_call_scopes_every_method_to_the_session(fake_cdp):
+    bare_browser().call("Page.reload", ignoreCache=True)
+    assert fake_cdp.calls == [("Page.reload", {"session_id": "S1", "ignoreCache": True})]
+
+
+def test_evaluate_returns_value_and_maps_exceptions_to_stale(fake_cdp):
+    instance = bare_browser()
+    fake_cdp.script = ["complete"]
+    assert instance.evaluate("document.readyState") == "complete"
+
+    fake_cdp.script = [{"__response__": {"exceptionDetails": {"text": "gone"}}}]
+    with pytest.raises(StalePage, match="Document changed during evaluation"):
+        instance.evaluate("1 + 1")
+
+    fake_cdp.script = [{"__response__": {}}]  # no result at all
+    assert instance.evaluate("undefined") is None
+
+
+def test_close_closes_the_target_once(fake_cdp):
+    instance = bare_browser()
+    instance.target = "T9"
+    instance.close()
+    instance.close()  # second call must not re-close
+    assert fake_cdp.calls == [("Target.closeTarget", {"targetId": "T9"})]
+    assert instance.target is None
+
+
+# --- observe(): retries, screenshots, post-input settling -------------------
+
+
+def test_observe_retries_stale_reads_then_succeeds(monkeypatch):
+    operation = Mock(side_effect=[StalePage("nav"), StalePage("nav"), dict(INFO)])
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    result = bare_browser().observe(screenshot=False)
+    assert result["marker"] == "M1"
+    assert operation.call_count == 3
+    request = operation.call_args.args[0]
+    assert request == {"operation": "observe", "session": "S1", "screenshot": False}
+
+
+def test_observe_raises_after_ten_stale_reads(monkeypatch):
+    operation = Mock(side_effect=StalePage("never settles"))
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    monkeypatch.setattr(browser.time, "sleep", lambda _s: None)
+    with pytest.raises(StalePage, match="never settles"):
+        bare_browser().observe()
+    assert operation.call_count == 10
+
+
+def test_observe_settles_after_input_before_reading(fake_cdp):
+    instance = bare_browser()
+    instance.after_input = {"kind": "fill", "node": 3}
+    fake_cdp.script = [None]  # the settle promise resolves
+    result = instance.observe(screenshot=False)
+
+    assert instance.after_input is None
+    settle, read = fake_cdp.evaluate_params()
+    assert settle["awaitPromise"] is True
+    assert '"node": 3' in settle["expression"] and '"kind": "fill"' in settle["expression"]
+    assert read["expression"] == browser.READ_STATE
+    assert result["fingerprint"] == browser.fingerprint(INFO)
+
+
+def test_observe_ignores_a_settle_interrupted_by_navigation(fake_cdp):
+    instance = bare_browser()
+    instance.after_input = {"kind": "click", "node": 1}
+    fake_cdp.script = [RuntimeError("context destroyed")]
+    result = instance.observe(screenshot=False)  # must not raise
+    assert result["marker"] == "M1"
+
+
+def test_observe_screenshot_is_captured_only_when_asked(fake_cdp):
+    with_shot = browser_operation({"operation": "observe", "session": "S1", "screenshot": True})
+    assert with_shot["screenshot"] == "JPEGDATA"
+    capture = next(p for m, p in fake_cdp.calls if m == "Page.captureScreenshot")
+    assert capture["format"] == "jpeg" and capture["quality"] == 72
+
+    fake_cdp.calls.clear()
+    without = browser_operation({"operation": "observe", "session": "S1", "screenshot": False})
+    assert "screenshot" not in without
+    assert "Page.captureScreenshot" not in fake_cdp.methods()
+
+
+def test_observe_of_a_navigating_document_is_stale(fake_cdp):
+    fake_cdp.script = [None]  # snapshot.js returns null mid-navigation
+    with pytest.raises(StalePage, match="Document is navigating"):
+        browser_operation({"operation": "observe", "session": "S1", "screenshot": False})
+
+
+# --- fresh(): per-node guards for click/select, marker otherwise ------------
+
+
+def guard_page():
+    return {"page_key": "K1", "guards": {"7": "guard-7"}, "marker": "M1"}
+
+
+def test_fresh_click_compares_page_key_and_node_guard(fake_cdp):
+    instance = bare_browser()
+    action = {"kind": "click", "node": 7}
+    fake_cdp.script = [["K1", "guard-7"]]
+    assert instance.fresh(guard_page(), action) is True
+    expression = fake_cdp.evaluate_params()[0]["expression"]
+    assert "c.nodes.get(7)" in expression
+
+    fake_cdp.script = [["K2", "guard-7"]]  # page moved on
+    assert instance.fresh(guard_page(), action) is False
+    fake_cdp.script = [["K1", "guard-8"]]  # node itself changed
+    assert instance.fresh(guard_page(), action) is False
+
+
+def test_fresh_rejects_non_int_nodes_without_evaluating(fake_cdp):
+    instance = bare_browser()
+    for node in ("7", 7.0, True, None):
+        assert instance.fresh(guard_page(), {"kind": "select", "node": node}) is False
+    assert fake_cdp.evaluate_params() == []
+
+
+def test_fresh_falls_back_to_the_page_marker(fake_cdp):
+    instance = bare_browser()
+    fake_cdp.script = ["M1", "M2", "M1"]
+    assert instance.fresh(guard_page(), {"kind": "fill", "node": 7}) is True
+    assert instance.fresh(guard_page(), {"kind": "fill", "node": 7}) is False
+    assert instance.fresh(guard_page()) is True  # no action at all
+
+
+# --- CdpBrowser.act(): freshness gate, wait, after_input bookkeeping --------
+
+
+def test_act_rejects_stale_decisions_before_any_input(monkeypatch):
+    operation = Mock(name="browser_operation")
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    instance = bare_browser()
+    monkeypatch.setattr(instance, "fresh", Mock(return_value=False))
+    with pytest.raises(StalePage, match="Observe again"):
+        instance.act({"kind": "click", "node": 1, "id": "a0"}, page={})
+    operation.assert_not_called()
+
+
+def test_act_wait_sleeps_and_records_no_after_input(monkeypatch):
+    operation = Mock(return_value={"executed": "a1"})
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    sleeps = []
+    monkeypatch.setattr(browser.time, "sleep", sleeps.append)
+    instance = bare_browser()
+    monkeypatch.setattr(instance, "fresh", Mock(return_value=True))
+
+    action = {"kind": "wait", "id": "a1"}
+    assert instance.act(action, page={}) == {"executed": "a1"}
+    assert sleeps == [0.1]
+    assert instance.after_input is None
+
+
+def test_act_click_records_after_input_for_the_next_observe(monkeypatch):
+    operation = Mock(return_value={"executed": "a2"})
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    instance = bare_browser()
+    monkeypatch.setattr(instance, "fresh", Mock(return_value=True))
+
+    action = {"kind": "click", "node": 4, "id": "a2"}
+    assert instance.act(action, page={}, text=None) == {"executed": "a2"}
+    assert instance.after_input is action
+    request = operation.call_args.args[0]
+    assert request == {"operation": "act", "session": "S1", "action": action, "text": None}
+
+
+# --- browser_operation act executor: real Input.* dispatch -------------------
+
+
+def act_request(action, text=None):
+    return {"operation": "act", "session": "S1", "action": action, "text": text}
+
+
+def test_scroll_dispatches_a_mouse_wheel_and_nothing_else(fake_cdp):
+    result = browser_operation(act_request({"kind": "scroll", "delta": 600, "id": "a3"}))
+    assert result == {"executed": "a3"}
+    assert fake_cdp.calls == [
+        (
+            "Input.dispatchMouseEvent",
+            {"session_id": "S1", "type": "mouseWheel", "x": 550, "y": 650, "deltaX": 0, "deltaY": 600},
+        )
+    ]
+
+
+def test_wait_performs_no_browser_calls(fake_cdp):
+    assert browser_operation(act_request({"kind": "wait", "id": "a4"})) == {"executed": "a4"}
+    assert fake_cdp.calls == []
+
+
+def test_act_rejects_a_non_int_node_before_evaluating(fake_cdp):
+    with pytest.raises(ValueError, match="Invalid observed node"):
+        browser_operation(act_request({"kind": "click", "node": "3", "id": "a5"}))
+    assert fake_cdp.calls == []
+
+
+def test_click_presses_and_releases_at_the_resolved_point(fake_cdp):
+    fake_cdp.script = [{"x": 12.5, "y": 40.0}]
+    result = browser_operation(act_request({"kind": "click", "node": 3, "id": "a6"}))
+    assert result == {"executed": "a6"}
+    mouse = [(m, p) for m, p in fake_cdp.calls if m == "Input.dispatchMouseEvent"]
+    assert [p["type"] for _, p in mouse] == ["mousePressed", "mouseReleased"]
+    assert all(p["x"] == 12.5 and p["y"] == 40.0 and p["button"] == "left" for _, p in mouse)
+    assert "Input.insertText" not in fake_cdp.methods()
+    # The resolver receives the observed node id, never a selector.
+    assert '"node": 3' in fake_cdp.evaluate_params()[0]["expression"]
+
+
+def test_fill_clicks_selects_all_and_inserts_text(fake_cdp):
+    fake_cdp.script = [{"x": 1.0, "y": 2.0}]
+    result = browser_operation(act_request({"kind": "fill", "node": 5, "id": "a7"}, text="Zurich"))
+    assert result == {"executed": "a7"}
+    modifiers = 4 if sys.platform == "darwin" else 2  # Cmd on macOS, Ctrl elsewhere
+    keys = [p for m, p in fake_cdp.calls if m == "Input.dispatchKeyEvent"]
+    assert [k["type"] for k in keys] == ["keyDown", "keyUp"]
+    assert keys[0]["commands"] == ["selectAll"] and keys[0]["modifiers"] == modifiers
+    assert keys[0]["key"] == "a" and keys[0]["code"] == "KeyA"
+    inserts = [p for m, p in fake_cdp.calls if m == "Input.insertText"]
+    assert inserts == [{"session_id": "S1", "text": "Zurich"}]
+    # Mouse click into the field precedes the keyboard work.
+    assert fake_cdp.methods().index("Input.dispatchMouseEvent") < fake_cdp.methods().index("Input.insertText")
+
+
+def test_select_acts_inside_the_evaluate_without_mouse_input(fake_cdp):
+    fake_cdp.script = [{"x": 3.0, "y": 4.0}]
+    action = {"kind": "select", "node": 9, "value": "1", "option_index": 2, "id": "a8"}
+    assert browser_operation(act_request(action)) == {"executed": "a8"}
+    assert fake_cdp.methods() == ["Runtime.evaluate"]  # selection already applied in-page
+    expression = fake_cdp.evaluate_params()[0]["expression"]
+    assert "option_index" in expression  # exact-option selection (upstream #216 deviation)
+    assert '"option_index": 2' in expression
+
+
+def test_unresolvable_target_is_stale_for_clicks_but_runtime_for_select(fake_cdp):
+    fake_cdp.script = [None]
+    with pytest.raises(StalePage, match="Target changed or is covered"):
+        browser_operation(act_request({"kind": "click", "node": 3, "id": "a9"}))
+
+    fake_cdp.script = [None]
+    with pytest.raises(RuntimeError, match="Dropdown execution was not confirmed"):
+        browser_operation(act_request({"kind": "select", "node": 3, "id": "a10"}))
+
+
+def test_evaluation_failure_during_select_is_not_reported_as_stale(fake_cdp):
+    # A select may already have mutated the page when evaluation dies, so
+    # it must surface as RuntimeError (inspect before retrying), not the
+    # retryable StalePage used for other kinds.
+    failure = {"__response__": {"exceptionDetails": {"text": "destroyed"}}}
+    fake_cdp.script = [dict(failure)]
+    with pytest.raises(RuntimeError, match="Dropdown execution was interrupted"):
+        browser_operation(act_request({"kind": "select", "node": 3, "id": "a11"}))
+
+    fake_cdp.script = [dict(failure)]
+    with pytest.raises(StalePage):
+        browser_operation(act_request({"kind": "click", "node": 3, "id": "a12"}))
+
+    fake_cdp.script = [dict(failure)]
+    with pytest.raises(StalePage):
+        browser_operation({"operation": "observe", "session": "S1", "screenshot": False})

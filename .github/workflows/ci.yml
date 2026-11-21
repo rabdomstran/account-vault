@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly bit-rot check (Mondays 06:17 UTC): catches runner/platform
+    # drift even when nothing has been pushed. Dependency updates come
+    # from Dependabot (.github/dependabot.yml) as PRs through this gate.
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
@@ -75,15 +80,15 @@ jobs:
 
       # -rs: print skip reasons so it is visible in the log that the
       # only skipped tests are the opt-in live-CDP pair.
-      # Coverage floor: suite measures 81% (uncovered lines are mostly
-      # the live-CDP paths in browser.py and the __main__ CLI); 80 is
-      # the regression floor, not an aspiration.
+      # Coverage floor: suite measures 90% (browser.py 99%, __main__
+      # 100%; remaining gaps are mostly demo.py and model.py edge
+      # paths). 89 is the regression floor, not an aspiration.
       - name: Test with coverage
         run: >-
           uv run pytest -rs
           --cov=account_vault
           --cov-report=term-missing
-          --cov-fail-under=80
+          --cov-fail-under=89
 
   build:
     name: build (wheel + sdist assets)
@@ -148,3 +153,29 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  e2e:
+    name: e2e (offline demo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.12.1"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: e2e
+
+      - name: Install dependencies
+        run: uv sync --locked --dev
+
+      # Real entry points, no mocks: `python -m account_vault` on the
+      # example page plus the inspector server as a subprocess driven
+      # over HTTP to done. A loop regression fails here even if the
+      # unit suite stays green. See scripts/e2e_offline_demo.py.
+      - name: Run offline demo end to end
+        run: uv run python scripts/e2e_offline_demo.py
