@@ -452,6 +452,19 @@ def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome
             f"blocked_reason={agent.state.get('blocked_reason')!r} offered={decider.offered} "
             f"scroll_seen={decider.scroll_seen} history={agent.state['history']}"
         )
+        if agent.state["status"] != "done":
+            # Failure-path probe: did the last wheel land late (observe
+            # read mid-animation) or never (input swallowed)? Poll the
+            # live scroll position and take one fresh observation.
+            poll = []
+            for _ in range(10):
+                poll.append(browser.evaluate("window.scrollY"))
+                time.sleep(0.1)
+            fresh_page = browser.observe(screenshot=False)
+            diag += (
+                f" poll_y={poll} viewport={browser.evaluate('[innerWidth, innerHeight]')} "
+                f"fresh_y={fresh_page['scroll']['y']} fresh_ids={[a['id'] for a in fresh_page['actions']]}"
+            )
         assert agent.state["status"] == "done", diag
         assert browser.evaluate("window.__clicks") == ["deep"]
         scrolls = [h for h in agent.state["history"] if h["kind"] == "scroll"]
