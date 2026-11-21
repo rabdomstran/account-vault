@@ -40,3 +40,14 @@ MAX_ACTIONS = 60
 MAX_DECISIONS = 120
 # Kept for compatibility with upstream naming in ported tests/callers.
 MAX_STEPS = MAX_ACTIONS
+# DEVIATION: episode-wide no-op budget, adopted from upstream PR #209
+# (MAX_STEPS // 5 there). Dropping a no-op control from the next offer
+# hands its turn to the runner-up, which is not guaranteed to help, so
+# scattered no-ops need their own bound; the three-consecutive stop alone
+# never fires when progress and no-ops alternate.
+MAX_NO_PROGRESS = MAX_ACTIONS // 5
+# How many recent cycle-eligible (non-wait/scroll) actions the #247
+# transition count looks back over. Wider than the comment thread's ~8
+# so a 3-step navigation cycle still registers when interleaved with
+# other substantive actions.
+CYCLE_WINDOW = 12

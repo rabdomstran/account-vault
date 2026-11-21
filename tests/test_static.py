@@ -172,47 +172,116 @@ def test_js_rendered_fixture_is_an_honest_static_boundary():
 
 
 # --- upstream issue #247: page-changing cycles must stop -------------------
-# No fix exists upstream (issue open at HEAD, no linked PR; checked with
-# gh 2026-11-21). The issue's comment thread suggests detecting cycles
-# over recent (url, control) pairs and giving up cleanly; each step here
-# CHANGES the page, so page-unchanged stops can never fire. Before the
-# fix this burned all 60 actions bouncing catalog <-> catalog_design.
+# No fix exists upstream (issue open at HEAD cf3c406, no linked PR; checked
+# with gh 2026-11-21). The issue's comment thread proposes tracking recent
+# (url, chosen control) pairs, dropping a pair that recurs twice from the
+# next offered set, and giving up cleanly at three; PR #209 (no-op drop +
+# episode cap) and #67's fork (dead target after 2) argue the same
+# drop-first shape for the no-op cousin. Each step here CHANGES the page,
+# so page-unchanged stops can never fire. Before any guard this burned all
+# 60 actions bouncing catalog <-> catalog_design; a block-only guard
+# stopped it at 5 but never gave the runner-up a turn.
+
+
+def _stub_decision(choice, node, operation):
+    return {
+        "choice": choice,
+        "node": node,
+        "operation": operation,
+        "target": "1",
+        "confidence": 1.0,
+        "probabilities": {choice: 1.0},
+        "operation_probabilities": {operation: 1.0},
+        "target_probabilities": {},
+        "target_confidence": None,
+        "raw_answers": {},
+        "model": "cycle-stub",
+        "usage": {},
+        "latency_ms": 0,
+        "request": {},
+    }
 
 
 class CycleDecider:
+    """Always takes the category link that bounces to the other file.
+
+    Records every offered label set so tests can prove the cycling control
+    actually left the offer. When it is gone, waits once (a real decider
+    can always choose WAIT/BLOCKED; raising here would only prove the stub
+    assumed the offer never shrinks).
+    """
+
+    def __init__(self):
+        self.offered = []
+
     def validate(self):
         return None
 
     def choose(self, state, goal, history):
+        self.offered.append([a["label"] for a in state["actions"]])
         want = "All stays" if "catalog_design" in state["url"] else "Design stays"
         for a in state["actions"]:
             if a["kind"] == "click" and a["label"] == want:
-                return {
-                    "choice": a["id"],
-                    "node": a.get("node"),
-                    "operation": "CLICK",
-                    "target": "1",
-                    "confidence": 1.0,
-                    "probabilities": {a["id"]: 1.0},
-                    "operation_probabilities": {"CLICK": 1.0},
-                    "target_probabilities": {},
-                    "target_confidence": None,
-                    "raw_answers": {},
-                    "model": "cycle-stub",
-                    "usage": {},
-                    "latency_ms": 0,
-                    "request": {},
-                }
-        raise AssertionError(f"no {want!r} link on {state['url']}")
+                return _stub_decision(a["id"], a.get("node"), "CLICK")
+        wait = next(a for a in state["actions"] if a["kind"] == "wait")
+        return _stub_decision(wait["id"], None, "WAIT")
 
 
 def test_page_changing_cycle_blocks_instead_of_burning_action_budget():
-    with Agent(
-        str(CATALOG), "Browse categories", decider=CycleDecider(), text_provider=MappingTextProvider({})
-    ) as agent:
+    decider = CycleDecider()
+    with Agent(str(CATALOG), "Browse categories", decider=decider, text_provider=MappingTextProvider({})) as agent:
         list(agent.run())
         assert agent.state["status"] == "blocked"
         assert "cycle" in agent.state["blocked_reason"].lower()
-        # Pair (Design stays -> design page) recurs on steps 1, 3, 5.
-        assert len(agent.state["history"]) == 5
-        assert all(h["page_changed"] for h in agent.state["history"])
+        # Transition (catalog --Design stays--> design) executes on steps
+        # 1 and 3, so the 5th decision must not offer it (drop at two);
+        # the decider waits, the suppression is spent, it executes a 3rd
+        # time and the run blocks (give up at three).
+        assert [h["action"] for h in agent.state["history"]] == [
+            "Design stays",
+            "All stays",
+            "Design stays",
+            "All stays",
+            "Wait for the page to update",
+            "Design stays",
+        ]
+        assert "Design stays" not in decider.offered[4]
+        assert "Design stays" in decider.offered[5]
+        assert all(h["page_changed"] for h in agent.state["history"] if h["kind"] != "wait")
+
+
+class RecoveringCycleDecider:
+    """Prefers the cycling category link, but takes the productive
+    runner-up (opening Casa Flora) when the link is not offered."""
+
+    def validate(self):
+        return None
+
+    def choose(self, state, goal, history):
+        if "Free cancellation included" in state["text"]:
+            return _stub_decision("DONE", None, "DONE")
+        want = "All stays" if "catalog_design" in state["url"] else "Design stays"
+        for wanted in (want, "View Casa Flora"):
+            for a in state["actions"]:
+                if a["kind"] == "click" and a["label"] == wanted:
+                    return _stub_decision(a["id"], a.get("node"), "CLICK")
+        return _stub_decision("BLOCKED", None, "BLOCKED")
+
+
+def test_cycle_drop_lets_the_runner_up_finish_the_task():
+    # The difference drop-first makes: a block-only guard ends this run
+    # blocked on the 3rd Design click; dropping the link for one decision
+    # lets the same decider open Casa Flora and finish.
+    with Agent(
+        str(CATALOG), "Open Casa Flora", decider=RecoveringCycleDecider(), text_provider=MappingTextProvider({})
+    ) as agent:
+        list(agent.run())
+        assert agent.state["status"] == "done"
+        assert [h["action"] for h in agent.state["history"]] == [
+            "Design stays",
+            "All stays",
+            "Design stays",
+            "All stays",
+            "View Casa Flora",
+        ]
+        assert "Free cancellation included" in agent.state["page"]["text"]
