@@ -280,3 +280,139 @@ Wall-clock warning from §1's evidence, now first-hand: budget
 ~25 min for the eager smoke, ~15 min compiled, ~5 min for the
 harness at these run counts — on this machine, that patience *is*
 the finding.
+
+## 7. Tracker cross-check (2026-11-22): has anyone hit this wall before?
+
+Method: all 57 issue + 182 PR titles in
+[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
+enumerated, 14 body-text keyword searches (MPS, MLX, quant, latency,
+local model, self-hosted, Apple Silicon, prefill, LiquidAI/d1,
+joey/Kev/Laya, truncate, 6000, timeout, GGUF/Ollama), then every
+candidate opened in full — 12 issues and 22 PRs upstream, bodies and
+comments read individually; local tracker checked too (0 issues
+ever; PRs #15/#18 read — corpus triage and the doubles harness,
+neither touches local-model latency). One external link followed
+where a tracker item names it as its MPS path (SemIf, from #125).
+Images embedded in threads were not OCR-read. Classes: **(a)**
+measured, **(b)** concrete repro, **(c)** proposal/config without
+measurement, **(d)** noise.
+
+**Headline: nobody upstream has measured a local model's prefill
+inside this loop.** Searches for `MLX`, quantisation, and
+LiquidAI/d1 return **zero** upstream items; `MPS` returns exactly
+one ([#125](https://github.com/browser-use/jev-ultrafast/issues/125),
+a feature request, (c)); `prefill` one false positive
+([PR #246](https://github.com/browser-use/jev-ultrafast/pull/246),
+"prefilled" textarea, (d)). Our §3 numbers are the first
+loop-shaped local-prefill measurement in either tracker. What the
+tracker does contain, claim by claim:
+
+- **Prefill-bound wall — corroborated one link out, unhit in the
+  tracker itself.** The only upstream item that names local MPS at
+  all is #125 /
+  [PR #126](https://github.com/browser-use/jev-ultrafast/pull/126)
+  (SemIf backend, Qwen3.5-4B via GGUF/llama.cpp "or Apple Silicon
+  MPS", (c) — no latency figure anywhere in the thread). Its linked
+  [SemIf Apple Silicon doc](https://github.com/TheoLeeCJ/SemIf-OpenJev/blob/master/docs/APPLE_SILICON.md)
+  independently reports the same wall on an M5 (24 GB): warm direct
+  decision on a ~140-token prompt ~0.6 s PyTorch-MPS vs ~0.26 s MLX,
+  first forward ~7–8 s (shader compilation; ours: 6.8 s trace), and
+  the same mechanism named — *"PyTorch MPS falls back to reference
+  kernels for Qwen3.5's hybrid attention (`causal_conv1d`,
+  `flash-linear-attention` are CUDA-only)"*. That is d1's hybrid
+  convolution/attention situation and the Kev finding in §1, from a
+  third codebase. What SemIf *did* about it matches our probe:
+  prefill the shared state once and branch suffixes (2.33 → 20.03
+  decisions/s on their 3090 fixture; Apple backends prefill once,
+  then serial suffixes) — the same shape as d1's set packing beating
+  `set_size=1` 2× (§3). PR #126 additionally shrinks per-call work
+  structurally (two-stage operation→target split, single-candidate
+  bypass, 16-option paging) — the opposite of our one-request
+  fan-out, trading round trips for smaller prefills. Unmerged.
+- **Repeated-rules inflation — corroborated and quantified
+  upstream.** [PR #49](https://github.com/browser-use/jev-ultrafast/pull/49)
+  ("Drastic token and payload compression", (a) for tokens) measures
+  the stock request at ~4,877 tokens/100 elements and removes
+  exactly the waste our probe priced: `NEXT_ACTION`/`TARGET` copied
+  into every question (~900 tokens/request by their count; we
+  measured 1.5–1.9K chars of instructions per question), verbose
+  element JSON, nested per-candidate criteria, 6,000→3,000-char
+  page text — landing at ~1,753 tokens (−64%), offline tests green.
+  Its latency benefit is *asserted* from token counts ("context size
+  heavily dictates LLM latency"), never timed; it changes the wire
+  shape (shared `state["rules"]`); and it has sat open since
+  2026-09-19 with only bot review. Even taken whole it would not
+  rescue MPS d1 here (−64% of 7.5 s ≈ 2.7 s), but it is the first
+  fix to re-price for any successor backend. The counter-pressure
+  is also on record:
+  [#149](https://github.com/browser-use/jev-ultrafast/issues/149)
+  proposes *adding* structured state tokens for accuracy, with the
+  tokens/latency A/B designed in-thread and never run (c).
+- **Slow decides upstream were network, not compute — and were
+  routed around, not fixed locally.** The one measured latency
+  thread, [#85](https://github.com/browser-use/jev-ultrafast/issues/85)
+  (a) (Japan, 9 runs, timers around `post_json`): hosted Jev
+  228–5,400 ms/request (24× spread), decisions 56–68% of task time,
+  proven link-bound (same-country datacenter: 480 ms median) and
+  mitigated by proxying decisions through a VPS (562–631 ms).
+  [PR #97](https://github.com/browser-use/jev-ultrafast/pull/97)
+  hardens the loop for ~1 s round trips (timeouts, readyState,
+  retries; Flights passing in ~37 s over that link). #85's
+  side-finding transfers directly to seconds-scale local decides:
+  at 1–2 s per `choose`, fingerprints change mid-decision and 6–7
+  calls produced 2 executed actions — slow decides tax freshness
+  twice. Nobody upstream reports a sub-100 ms in-loop decide p50
+  from any backend; the tracker's fastest decide figures are
+  hosted/gateway medians in the 178–562 ms band
+  (upstream `performance.md`'s 178 ms median, #85's 480–631 ms;
+  [#241](https://github.com/browser-use/jev-ultrafast/issues/241)'s
+  "~255 ms" gateway fix, (a)-thin;
+  [PR #15](https://github.com/browser-use/jev-ultrafast/pull/15) /
+  [#28](https://github.com/browser-use/jev-ultrafast/pull/28)
+  task-level 3.2–6.7 s). ADR-001's <100 ms target has no upstream
+  precedent — it was always the local-inference bet.
+- **Model swaps: demanded constantly, merged never.** Seven-plus
+  open PRs make the endpoint configurable
+  ([#175](https://github.com/browser-use/jev-ultrafast/pull/175),
+  [#232](https://github.com/browser-use/jev-ultrafast/pull/232),
+  [#146](https://github.com/browser-use/jev-ultrafast/pull/146),
+  [#107](https://github.com/browser-use/jev-ultrafast/pull/107),
+  [#28](https://github.com/browser-use/jev-ultrafast/pull/28),
+  [#29](https://github.com/browser-use/jev-ultrafast/pull/29),
+  [#74](https://github.com/browser-use/jev-ultrafast/pull/74))
+  for [#25](https://github.com/browser-use/jev-ultrafast/issues/25) /
+  #241; upstream has merged exactly three PRs ever, all docs
+  pointers. The lived swap reports inside them are uniformly
+  hosted-shaped: gateways passing `validate_choice` unchanged
+  (#146: 46 live calls; #241), a self-hosted server completing
+  `choose()` (#175 — whose author is the only person to flag our
+  failure mode in advance: *"`timeout=25` assumes sub-second
+  decisions, so a slow backend will time out"*), and one local
+  **Kev** server answering unchanged (#146 comment, no latency
+  figure). Pluggable-engine PRs
+  ([#182](https://github.com/browser-use/jev-ultrafast/pull/182)
+  Laya local/Colab-remote,
+  [#89](https://github.com/browser-use/jev-ultrafast/pull/89)
+  provider protocols,
+  [#122](https://github.com/browser-use/jev-ultrafast/pull/122)
+  generative-LLM fallback,
+  [#128](https://github.com/browser-use/jev-ultrafast/pull/128))
+  are (c): where local execution appears it is either gated on
+  "sufficient RAM/GPU" (#182) or offloaded to a free Colab GPU —
+  i.e. upstream's answer to local cost is to not pay it on the
+  laptop. [#187](https://github.com/browser-use/jev-ultrafast/issues/187)'s
+  multi-stage proposal is explicitly theoretical and spends 2–3×
+  latency, the wrong direction here.
+- **Swap/16 GB pressure: no upstream counterpart.** Zero tracker
+  hits for swap or unified-memory pressure; "RAM" appears only as
+  #182's local-vs-remote split. Our §5 caveat stays a local-machine
+  observation — consistent with nobody upstream having run a 2B
+  bf16 torch model in-loop on a 16 GB machine and reported it.
+
+Net effect on §1–§5: nothing upstream contradicts the
+measurements, and two findings gain independent support (hybrid-
+kernel MPS fallback as mechanism; shared-prefill as the standard
+mitigation). The one actionable upstream artifact is PR #49's
+payload compression — worth re-pricing against whichever backend
+the ADR-001 revision picks, with its wire-shape change treated as
+the deliberate deviation it is.
