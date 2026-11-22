@@ -138,6 +138,32 @@ def test_native_fill_rejects_unusable_values_without_mutating():
         assert browser.fresh(page) is True, input_type
 
 
+def test_fresh_reuses_the_last_build_until_an_act_mutates():
+    # docs/latency-results.md: fresh() used to rebuild the whole
+    # element table on every call (3-4 builds per loop step). The
+    # static DOM only mutates through act()/navigation, so the last
+    # build's marker/guards are reused while no act has landed.
+    browser = StaticBrowser(FIXTURE)
+    builds = []
+    real_build = browser._build
+
+    def counting_build():
+        builds.append(1)
+        return real_build()
+
+    browser._build = counting_build
+    page = browser.observe()
+    assert len(builds) == 1
+    assert browser.fresh(page) is True
+    assert browser.fresh(page) is True
+    assert len(builds) == 1  # served from the cached build, not rebuilt
+
+    browser.act(_fill_action(page), page, text="Lisbon")
+    assert browser.fresh(page) is False  # the fill landed; old page is stale
+    current = browser.observe()
+    assert browser.fresh(current) is True
+
+
 def test_native_fill_rejects_freeform_and_missing_values():
     browser = StaticBrowser(FIXTURE)  # its Check-in field is a native date
     page = browser.observe()
