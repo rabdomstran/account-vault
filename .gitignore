@@ -6,6 +6,8 @@ venv/
 .coverage
 htmlcov/
 dist/
+# real settings carry API keys; only .env.example is committed
+.env
 # vault data never belongs in the repo
 *.vault
 *.db
