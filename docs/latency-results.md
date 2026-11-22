@@ -463,8 +463,8 @@ the wait. The snapshot still records the root as unmoved, so
 only the 3 s is saved. Pinned at the fake-CDP seam (chain
 hit, direction guard, silent-chain fall-through, probe
 failure still dispatching) and live (swallow exits fast with
-the root unmoved; at-limit-under-`contain` pays a shortened
-deadline in full). Counterfactual: with browser.py reverted,
+the root unmoved; at-limit-under-`contain` pays the deadline
+in full). Counterfactual: with browser.py reverted,
 the live swallow test fails at the deadline (≈4 s wall).
 
 Same-setup harness, mechanisms only (nested scenario added to
@@ -479,6 +479,62 @@ Same-setup harness, mechanisms only (nested scenario added to
 What still pays the full deadline, deliberately: the
 undecidable mirror above, pinch-zoom, growing pages, and any
 commit later than 3 s.
+
+### Deadline audit: was anything shortened, and is 3 s the right order? (2026-11-22)
+
+Audit trigger: the subsection above first shipped saying the
+`contain` live test pays "a shortened deadline" — against
+this port's own bar (never shorten on macOS numbers; the bar
+is a Linux CI commit-lag distribution). Findings:
+
+- **The product was never shortened.** `SCROLL_SETTLE_TIMEOUT`
+  is 3.0 s at every commit; the only shortening that ever
+  existed was a 1.0 s monkeypatch inside that one live test,
+  which proved merely "no early exit within 1 s" and read
+  like a product change. It does not meet the bar as evidence
+  for anything, and is removed: the test now pays the real
+  3 s (asserts ≥2,900 ms).
+- **The Linux distribution now exists.** A new live test
+  (`test_live_scroll_commit_lag_stays_well_under_the_deadline`)
+  measures dispatch → first visible `scrollY` change over 40
+  wheels and prints `[scroll-commit-lag]` into every CI live
+  log; the product wait starts after the post-input settle,
+  so the numbers overstate what the deadline must absorb.
+  First Linux sample (CI run 45021449949, ubuntu-latest,
+  Chrome 157.0.8103.78 — the version from the original
+  failure): **n=40, p50 47.4 ms, p95 998.9 ms, max
+  1,015.7 ms** (the ≈1 s clustering is consistent with
+  throttled frame production on the owned background tab —
+  inferred from the values, not independently traced). Same-test macOS sample: p50 32.7 ms, max
+  33.6 ms — a 30× smaller tail, which is the whole point of
+  the bar: macOS numbers would have "justified" a 100 ms
+  deadline that Linux violates on ~5% of wheels, and the
+  floated 0.75–1 s shortening sits *inside* the observed
+  Linux distribution. **Shortening is rejected on evidence,
+  not caution.**
+- **Is 3 s even the right order of magnitude?** Chromium
+  bounds nothing here. A wheel over a non-passive handler
+  region "might be blocked on the main thread waiting for
+  non-passive event handlers to process the wheel/touch
+  events" (`cc/input/main_thread_scrolling_reason.h`,
+  `kWheelEventHandlerRegion`); the compositor's offset
+  reaches `window.scrollY` only on a main-thread commit; and
+  a hidden page may receive no BeginFrame at all, deferring
+  that commit indefinitely. So legitimate lag spans ~10¹ ms
+  (a frame or two, typical), ~10³ ms (observed idle-headless
+  Linux tail), and unbounded under a busy main thread (any
+  long task delays both the handler verdict and the commit).
+  No finite deadline is a proof — it is headroom against a
+  misrecorded no-op. At 3× the worst lag Linux CI has
+  produced and ~60× its p50, 3 s is the right order
+  (10⁰ s): 0.1 s would misfire routinely on Linux, 30 s
+  would make every genuine no-op cost a third of a minute
+  for no added safety against an unbounded tail. **Keep
+  3.0 s.** If this is ever revisited, the re-opener is the
+  `[scroll-commit-lag]` line accumulating in CI logs — many
+  runs, not one — showing max ≪ a proposed value, plus a
+  loaded-main-thread sample, which the idle gate does not
+  measure.
 
 ## Limits — what this does not show
 

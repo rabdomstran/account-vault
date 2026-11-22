@@ -169,7 +169,7 @@ re-litigating the CI failure that created the wait.
 |---|---|---|---|
 | Keep 3 s (status quo) | — | — | 3.08 s per boundary discovery (once per unchanged page/direction); spike is invisible unless settle is timed per stage. Correct on every tab speed observed so far |
 | **Early exit on provable boundary** | The existing poll evaluate also returns the max scroll offset; exit as soon as the viewport is *at* the limit in the scrolled direction, keep the full 3 s only when movement is still possible but unobserved | The full ~3 s whenever the boundary is provable at poll time (the common genuine-boundary case) | Small: one evaluate shape + fake-CDP/live pins. Does not help the swallowed-wheel case (viewport scrollable, wheel eaten by a nested scroller) — deliberately: that is the case the deadline protects. Needs care with growing pages (sample the limit every poll, as `scrollY` already is) |
-| Shorten the deadline (e.g. 3 s → 0.75–1 s) | One constant | ~2–2.3 s per boundary/swallowed probe | Reopens the exact race if real commit lag exceeds the new value; failure mode is an intermittent mid-page `blocked`, platform-specific (the lag evidence is Linux headless; all latency distributions so far are macOS, where moving settles finish ≤51 ms p95). Cheap to write, expensive to justify: needs a commit-lag distribution from Linux CI Chrome before any number is defensible |
+| Shorten the deadline (e.g. 3 s → 0.75–1 s) | One constant | ~2–2.3 s per boundary/swallowed probe | Reopens the exact race if real commit lag exceeds the new value; failure mode is an intermittent mid-page `blocked`, platform-specific (the lag evidence is Linux headless; all latency distributions so far are macOS, where moving settles finish ≤51 ms p95). Cheap to write, expensive to justify: needs a commit-lag distribution from Linux CI Chrome before any number is defensible. **Update 2026-11-22: that distribution now exists and rejects this row** — Linux CI Chrome 157, n=40: p50 47.4 ms but p95 998.9 ms / max 1,015.7 ms, so 0.75–1 s sits inside observed idle lag (audit in [latency-results.md](latency-results.md)) |
 | Frame/scroll-event quiescence | Replace the poll with an in-page promise: resolve on `scroll` event + quiet frames, cap ~500 ms | Most of the boundary cost and some moving-scroll cost | `requestAnimationFrame` is throttled or paused on exactly the idle headless/background tabs whose lag forced polling; still needs a timeout fallback to tell boundary from late commit, so the deadline question returns in new dress. Medium complexity in the settle path |
 | Move the proof to the agent layer | Observe never waits; a scroll counts as no-op for #209/#212 only after two consecutive unchanged observations | All poll cost, moving scrolls included | Largest blast radius: touches mirrored history/no-progress semantics on both backends, and for one step the decider sees pre-commit scroll state — the window in which upstream's model emitted premature `BLOCKED` (#212's original bug) unless the proven-progress rule also learns an "unconfirmed" state. Regression surface is the cycle/no-progress suite, not one function |
 | Programmatic `scrollBy` instead of wheel dispatch | Act evaluates `window.scrollBy(0, delta)`; commit is readable synchronously (forced layout), poll deleted or vestigial | All commit-poll cost | Changes input semantics upstream chose deliberately: `wheel` listeners and scroll-hijacking UIs never fire, the nested scroller under the cursor is bypassed, `scroll-behavior: smooth` makes it async again (poll returns for those pages), and it is the most bot-visible option (TinyFish's settle/bot-visibility failure mode, issue-analysis §6). Needs wheel-listener live fixtures before it is even testable |
@@ -185,7 +185,12 @@ commit-lag distribution from the Linux CI Chrome that produced
 the original failure (the harness's scroll micro-benchmark under
 the live gate would produce it). Whatever lands must keep the
 deep-scroll live test green on Linux — that test is the wait's
-reason to exist.
+reason to exist. (2026-11-22: the live gate now prints that
+distribution every run as `[scroll-commit-lag]`; its first
+Linux sample — max ≈1.02 s idle — keeps 3 s, which Chromium's
+unbounded main-thread/hidden-page commit delays confirm is
+the right order of magnitude. See the audit in
+[latency-results.md](latency-results.md).)
 
 **Outcome (2026-11-22): the early exit landed** in the narrowed
 form a wider research pass supported — direction-aware,
