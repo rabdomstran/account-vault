@@ -24,13 +24,19 @@ jobs:
       contents: write # create the GitHub Release and upload assets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.12.1"
           python-version: "3.12"
-          enable-cache: true
+          # No cache in the release build (zizmor cache-poisoning):
+          # a poisoned cache must not reach published artifacts.
+          # Checkout credentials are not persisted either; the
+          # release step uses GH_TOKEN explicitly.
+          enable-cache: false
           cache-dependency-glob: "**/uv.lock"
           cache-suffix: release
 
