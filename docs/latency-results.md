@@ -503,9 +503,14 @@ is a Linux CI commit-lag distribution). Findings:
   First Linux sample (CI run 45021449949, ubuntu-latest,
   Chrome 157.0.8103.78 — the version from the original
   failure): **n=40, p50 47.4 ms, p95 998.9 ms, max
-  1,015.7 ms** (the ≈1 s clustering is consistent with
-  throttled frame production on the owned background tab —
-  inferred from the values, not independently traced). Same-test macOS sample: p50 32.7 ms, max
+  1,015.7 ms**. Corroborated by the next two Linux runs the
+  same day (45021780010, 45021785838): p50 32.8/33.8 ms,
+  p95 998.9 ms in both, max 998.9/999.1 ms — the ≈1 s value
+  repeats to the millisecond across runs, consistent with a
+  throttled ~1 Hz frame cadence on the owned background tab
+  (inferred from the quantization, not independently
+  traced), and in any case a stable property of the gate
+  that produced the original failure, not runner noise. Same-test macOS sample: p50 32.7 ms, max
   33.6 ms — a 30× smaller tail, which is the whole point of
   the bar: macOS numbers would have "justified" a 100 ms
   deadline that Linux violates on ~5% of wheels, and the
