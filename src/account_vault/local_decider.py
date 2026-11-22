@@ -34,8 +34,13 @@ command, not an ``ImportError`` traceback.
 ``trust_remote_code=True`` executes the checkpoint's own Python
 files from the Hub. That is the model card's documented load path
 and the code was read before first use here (see
-docs/d1-mps-smoke.md); pin ``revision`` when reproducibility
-matters, as the smoke script does.
+docs/d1-mps-smoke.md). The constraint is enforced, not advisory:
+the default checkpoint loads at ``DEFAULT_REVISION`` (the exact
+revision that was read/scanned), and any other Hub checkpoint
+without an explicit ``revision`` pin is refused -- reviewing the
+code a pin names is the caller's job before they pass it. A local
+directory path needs no pin: that code is already on the user's
+disk by their own hand.
 
 Timing honesty on Apple Silicon: MPS work is asynchronous, so
 ``choose()`` synchronizes the MPS stream before stamping
@@ -51,12 +56,18 @@ records which one produced a number.
 import json
 import time
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from .model import Decision, JsonDict, ModelError, Page, build_choose_request, parse_choose_response
 from .settings import Settings, load_settings
 
 DEFAULT_MODEL_ID = "LiquidAI/d1-2B"
+# The revision whose 26 checkpoint .py files were read/scanned before
+# first execution (docs/d1-mps-smoke.md). trust_remote_code runs Hub
+# Python, so the default load must name exactly this code, not
+# whatever `main` points at today.
+DEFAULT_REVISION = "a6bce774e6dde338dcc3036ceb5d91f78bf4c19e"
 
 
 def _as_text(value: Any) -> str:
@@ -112,8 +123,18 @@ def load_d1_model(
 
     bf16 off-CPU, float32 on CPU (card quick start). Raises
     ``ModelError`` naming the missing extra when torch/transformers
-    are not installed.
+    are not installed, and for an unpinned non-default Hub
+    checkpoint (see module docstring: the pin is the reviewed code).
     """
+    if revision is None:
+        if model_id == DEFAULT_MODEL_ID:
+            revision = DEFAULT_REVISION
+        elif not Path(model_id).is_dir():
+            raise ModelError(
+                f"Refusing to load {model_id!r} with trust_remote_code=True and no revision pin: "
+                "that executes whatever Python the Hub serves today. Pass revision=<commit> for a "
+                "checkpoint whose code you have read. No action executed."
+            )
     try:
         import torch
         from transformers import AutoModel
