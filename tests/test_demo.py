@@ -143,6 +143,26 @@ def test_inspector_serves_over_a_real_socket():
         demo.PORT = original_port
 
 
+@pytest.mark.socket
+def test_make_server_does_not_resolve_fqdn(monkeypatch):
+    """server_bind must not call getfqdn: on the macOS CI runner that
+    lookup stalled 35s and dominated the whole matrix job."""
+    import socket
+
+    monkeypatch.setattr(socket, "getfqdn", lambda *a: (_ for _ in ()).throw(AssertionError("getfqdn called")))
+    original_port = demo.PORT
+    try:
+        server = demo.make_server(0)
+    except PermissionError as error:
+        pytest.skip(f"listening sockets not permitted in this environment: {error}")
+    try:
+        assert server.server_name == "127.0.0.1"
+        assert server.server_port == demo.PORT and demo.PORT != 0
+    finally:
+        server.server_close()
+        demo.PORT = original_port
+
+
 def test_offline_flights_is_rejected_and_state_endpoint_reports_budget():
     status, body = request(
         "POST", "/api/reset", {"scenario": "flights", "mode": "offline", "goal": "x"}, token=demo.TOKEN
