@@ -58,7 +58,7 @@ The inspector web demo was ported in the second step (see table).
 | [#11](https://github.com/browser-use/jev-ultrafast/issues/11) | Text helper always sends a `reasoning` field some providers reject (HTTP 400) | Reasoning driven only by config; `TEXT_MODEL_REASONING=omit` sends nothing |
 | [#247](https://github.com/browser-use/jev-ultrafast/issues/247) | Page-changing navigation cycle (`sort → index → Coffees`, 44 actions): every step changes the page so repeat/unchanged guards never fire. **No upstream fix to adopt** — issue open at HEAD `cf3c406`, no linked PR (adjacent [#245](https://github.com/browser-use/jev-ultrafast/pull/245)/[#209](https://github.com/browser-use/jev-ultrafast/pull/209)/[#212](https://github.com/browser-use/jev-ultrafast/pull/212) address cousins, not cycles) | The comment thread's drop-then-block, source-aware: identical transition (source URL, kind, label, text, landing URL) 2× in the last 12 eligible actions → control dropped for one decision on that source page; at `max_cycle_repeats` (3) → `blocked` + reason. Same rework adopts [#209](https://github.com/browser-use/jev-ultrafast/pull/209)'s no-op drop (fingerprint-scoped) + episode cap `MAX_NO_PROGRESS=12`. Earlier cut keyed only on (label, landing URL) and blocked with no recovery turn — it also blocked legitimate hub-and-spoke browsing (pinned in `tests/test_regressions.py`) |
 | PR [#245](https://github.com/browser-use/jev-ultrafast/pull/245) (no issue) | A control covered at act time is refused before input, records no history, and is reoffered identically on re-observe — decision-layer drops (which learn only from executed actions) can never fire; locally the run died as `blocked` on the stale-streak stop while a hittable runner-up sat unchosen | Snapshot remembers the rejected node and omits it until its centre is hittable again (marker unchanged, only rejected nodes rechecked); distinct `CoveredTarget` (a covered SELECT re-observes instead of reading as an unconfirmed mutation); cached page reads unfresh until re-observe (the manual predict/act hole in #245's review); covered learnings that change the offer do not spend stale strikes. Not taken: PR [#137](https://github.com/browser-use/jev-ultrafast/pull/137)'s hit-test-every-candidate at every snapshot (+fragment fallback for wrapped links) — #245 learns only from actual refusals |
-| PR [#212](https://github.com/browser-use/jev-ultrafast/pull/212) + PR [#209](https://github.com/browser-use/jev-ultrafast/pull/209) interaction (found by the CI live gate probing this port) | A dispatched `mouseWheel` commits its offset asynchronously; on an idle headless/background tab the post-input observe (2 rAF / 50ms settle) read `scrollY` unchanged, so a landed scroll recorded as a no-op, #209's drop removed `scroll_down` mid-page, and #212's proven-progress rule could never re-offer it — the deep-scroll live test blocked on Linux Chrome 157 (reads `0→560`, `560→560`; a later live poll showed `1120`) while passing on macOS | Observe after a scroll polls `scrollY` until it moves in the scrolled direction (3s deadline, `SCROLL_SETTLE_TIMEOUT`) before snapshotting; a genuine boundary no-op pays the deadline once and the existing no-op machinery proceeds unchanged. Pinned offline at the fake-CDP seam and live by the CI `live (headless Chrome)` gate |
+| PR [#212](https://github.com/browser-use/jev-ultrafast/pull/212) + PR [#209](https://github.com/browser-use/jev-ultrafast/pull/209) interaction (found by the CI live gate probing this port) | A dispatched `mouseWheel` commits its offset asynchronously; on an idle headless/background tab the post-input observe (2 rAF / 50ms settle) read `scrollY` unchanged, so a landed scroll recorded as a no-op, #209's drop removed `scroll_down` mid-page, and #212's proven-progress rule could never re-offer it — the deep-scroll live test blocked on Linux Chrome 157 (reads `0→560`, `560→560`; a later live poll showed `1120`) while passing on macOS | Observe after a scroll polls `scrollY` until it moves in the scrolled direction (3s deadline, `SCROLL_SETTLE_TIMEOUT`) before snapshotting; a genuine boundary no-op pays the deadline once and the existing no-op machinery proceeds unchanged. Pinned offline at the fake-CDP seam and live by the CI `live (headless Chrome)` gate. Its boundary cost, measured later at 3.08 s per probe, and the costed options for reducing it are recorded under *Measured costs of this port's own fixes* below |
 | PR [#246](https://github.com/browser-use/jev-ultrafast/pull/246) (no issue; unmerged at adoption) | `name()` falls back to child text for everything but `INPUT`; a `<textarea>`'s child text is its *default value*, so an unlabeled prefilled textarea is named by stale (possibly template-sized) content, `title`/`placeholder` never apply, and the label disagrees with the value after any edit | Upstream's one-line exclusion (`INPUT`+`TEXTAREA`) verbatim in `snapshot.js`; static mirror excludes `textarea` in `_name` and computes `<label>` text without the field's own subtree (snapshot.js gets that from its seen set), so wrapping-label textareas — and wrapped selects, previously `"Category All Design"` where the CDP backend said `"Category"` — name identically on both backends. Pinned offline (`test_static.py`) and live (`test_live_cdp.py`, upstream's guard-check shape) |
 | [#5](https://github.com/browser-use/jev-ultrafast/issues/5) | Inspector reads static assets without encoding → Windows UTF-8 failure | Explicit `encoding="utf-8"` in [demo.py](/Users/jagadesh/Documents/Projects/account-vault/src/account_vault/demo.py) (same fix as upstream PR [#208](https://github.com/browser-use/jev-ultrafast/pull/208)) |
 | [#14](https://github.com/browser-use/jev-ultrafast/issues/14) (drift P0.4, with PRs [#97](https://github.com/browser-use/jev-ultrafast/pull/97)/[#19](https://github.com/browser-use/jev-ultrafast/pull/19)) | `Page.captureScreenshot` runs unguarded inside observe on the harness's 5s default: one stalled capture (`timed out after 5s waiting for the daemon`) kills the run at startup, and no CDP call carries an explicit deadline | Explicit IPC deadlines (`_deadline`): session calls get 30s (`CDP_RESPONSE_TIMEOUT` — a deadline, never a retry reason; a timed-out mutation propagates for inspection), screenshots keep 5s (`SCREENSHOT_RESPONSE_TIMEOUT`) and a capture timeout degrades that observation to `screenshot=None`, preserving the structured read; non-timeout failures still propagate. Branch `codex/bu-bench-eval-v2` (`a2676ee`/`6cf62ca`) diffed before adopting. Pinned at the fake-CDP seam in `test_browser_cdp.py` |
@@ -107,11 +107,84 @@ The inspector web demo was ported in the second step (see table).
   offline doubles with the real decide/text contracts, so the full loop
   runs in tests/CI with no network or API key. `DONE` still requires the
   caller's independent `done_when` evidence.
+- **`scripts/latency_harness.py`** + [latency-results.md](latency-results.md):
+  per-stage loop timing (snapshot/settle/observe/decide/act) against
+  upstream's published performance numbers and the TinyFish field
+  report, so speed claims here are measured, not inherited.
 - **`python -m account_vault`** ([__main__.py](/Users/jagadesh/Documents/Projects/account-vault/src/account_vault/__main__.py)):
   runs the loop against [examples/hotel_search.html](/Users/jagadesh/Documents/Projects/account-vault/examples/hotel_search.html)
   (which exercises the date/contenteditable/duplicate-option fixes) and
   verifies the outcome independently. `--decider systemone` drives the
   same file with the real backend from `.env`.
+
+## Measured costs of this port's own fixes
+
+### Boundary scroll: one observe can cost 3.08 s (the #212/#209 scroll-commit wait)
+
+The latency harness (`scripts/latency_harness.py`,
+[latency-results.md](latency-results.md)) priced the scroll-commit
+wait in the Fixed table above
+(`SCROLL_SETTLE_TIMEOUT = 3.0` in
+[browser.py](/Users/jagadesh/Documents/Projects/account-vault/src/account_vault/browser.py)):
+a wheel dispatched at the page boundary makes the following
+`observe()` take **p50 3,076 ms** (n=5, direct browser drive) —
+roughly 90 ordinary steps (33 ms p50) inside a single
+observation. Moving scrolls are fine: settle p50 34 ms / p95
+51 ms (n=84 across loop + micro runs), because the poll exits as
+soon as `scrollY` moves. Provenance matters for what may change:
+the 3 s value is *this port's* choice, not upstream text.
+Upstream [PR #212](https://github.com/browser-use/jev-ultrafast/pull/212)
+contributes proven-progress scroll state and
+[PR #209](https://github.com/browser-use/jev-ultrafast/pull/209)
+the no-op drop; their interaction on idle headless tabs (landed
+scroll misread as no-op → dropped mid-page → blocked) is what
+forced a commit wait here, and 3 s was picked as
+deadline-not-delay headroom over the observed hundreds-of-ms
+commit lag (Linux headless Chrome 157 evidence in the Fixed row),
+with no measured upper bound on that lag.
+
+When the full deadline is actually paid: the decider can only
+pick `scroll_down`/`scroll_up` when the snapshot offered it
+(`scrollY + innerHeight < scrollHeight − 2`, resp.
+`scrollY > 0`), and a scroll that moves at all — including one
+that lands exactly on the boundary — exits the poll at once.
+The 3 s therefore needs a wheel that never moves the main
+viewport despite the offer: content height changed between
+observe and act; the fixed wheel point (550, 650) lands on a
+nested scroller or modal that consumes the wheel; or the commit
+is swallowed/later than the deadline — the failure the wait
+exists for, indistinguishable from a boundary until the deadline
+passes. Direct `act()` callers dispatching an unoffered scroll
+pay it too. After payment, the unchanged observation drops the
+scroll from the next offer while the fingerprint holds
+(#209), so one unchanged page pays once per direction — but any
+page change re-arms the offer and can re-pay.
+
+Options, cheapest first. None is adopted yet; this entry exists
+so the choice is made from the measurements above, not by
+re-litigating the CI failure that created the wait.
+
+| Option | Change | Saves | Costs / risks |
+|---|---|---|---|
+| Keep 3 s (status quo) | — | — | 3.08 s per boundary discovery (once per unchanged page/direction); spike is invisible unless settle is timed per stage. Correct on every tab speed observed so far |
+| **Early exit on provable boundary** | The existing poll evaluate also returns the max scroll offset; exit as soon as the viewport is *at* the limit in the scrolled direction, keep the full 3 s only when movement is still possible but unobserved | The full ~3 s whenever the boundary is provable at poll time (the common genuine-boundary case) | Small: one evaluate shape + fake-CDP/live pins. Does not help the swallowed-wheel case (viewport scrollable, wheel eaten by a nested scroller) — deliberately: that is the case the deadline protects. Needs care with growing pages (sample the limit every poll, as `scrollY` already is) |
+| Shorten the deadline (e.g. 3 s → 0.75–1 s) | One constant | ~2–2.3 s per boundary/swallowed probe | Reopens the exact race if real commit lag exceeds the new value; failure mode is an intermittent mid-page `blocked`, platform-specific (the lag evidence is Linux headless; all latency distributions so far are macOS, where moving settles finish ≤51 ms p95). Cheap to write, expensive to justify: needs a commit-lag distribution from Linux CI Chrome before any number is defensible |
+| Frame/scroll-event quiescence | Replace the poll with an in-page promise: resolve on `scroll` event + quiet frames, cap ~500 ms | Most of the boundary cost and some moving-scroll cost | `requestAnimationFrame` is throttled or paused on exactly the idle headless/background tabs whose lag forced polling; still needs a timeout fallback to tell boundary from late commit, so the deadline question returns in new dress. Medium complexity in the settle path |
+| Move the proof to the agent layer | Observe never waits; a scroll counts as no-op for #209/#212 only after two consecutive unchanged observations | All poll cost, moving scrolls included | Largest blast radius: touches mirrored history/no-progress semantics on both backends, and for one step the decider sees pre-commit scroll state — the window in which upstream's model emitted premature `BLOCKED` (#212's original bug) unless the proven-progress rule also learns an "unconfirmed" state. Regression surface is the cycle/no-progress suite, not one function |
+| Programmatic `scrollBy` instead of wheel dispatch | Act evaluates `window.scrollBy(0, delta)`; commit is readable synchronously (forced layout), poll deleted or vestigial | All commit-poll cost | Changes input semantics upstream chose deliberately: `wheel` listeners and scroll-hijacking UIs never fire, the nested scroller under the cursor is bypassed, `scroll-behavior: smooth` makes it async again (poll returns for those pages), and it is the most bot-visible option (TinyFish's settle/bot-visibility failure mode, issue-analysis §6). Needs wheel-listener live fixtures before it is even testable |
+| Remember boundaries across fingerprints | Cache `(url, direction, scrollHeight)` boundary hits (browser→agent state); suppress re-probing until height changes | Repeat payments on pages that mutate trivially between probes | New cross-layer state + invalidation rules (infinite-scroll growth must re-arm); helps only repeats, never the first probe. Complementary to the early exit, not a substitute |
+
+Recommendation when this is picked up: the provable-boundary
+early exit first — it removes the measured cost where the
+boundary is provable and keeps the full deadline exactly where
+the evidence needs it (unprovable = possibly just late). Do not
+shorten the constant on macOS numbers alone; if a shorter
+deadline is ever proposed, the evidence bar is a scroll
+commit-lag distribution from the Linux CI Chrome that produced
+the original failure (the harness's scroll micro-benchmark under
+the live gate would produce it). Whatever lands must keep the
+deep-scroll live test green on Linux — that test is the wait's
+reason to exist.
 
 ## Verification (2026-11-21)
 
