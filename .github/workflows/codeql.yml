@@ -33,9 +33,8 @@ jobs:
         with:
           languages: python
 
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
-
+      # No autobuild step: Python is extracted without a build, so
+      # autobuild only added wall-clock (~10s) to the required check.
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:

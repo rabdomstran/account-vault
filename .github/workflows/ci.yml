@@ -1,7 +1,12 @@
 name: CI
 
 on:
+  # push is main-only: with an unrestricted push trigger every PR
+  # commit ran the full workflow twice (push + pull_request for the
+  # same SHA). PR branches are gated by the pull_request run; main
+  # keeps its post-merge run.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
   schedule:
@@ -111,9 +116,14 @@ jobs:
       # Coverage floor: suite measures 92% (browser.py 97%, __main__
       # 100%; remaining gaps are mostly demo.py and model.py edge
       # paths). 89 is the regression floor, not an aspiration.
+      # macOS runners take ~40s for this ~4s suite single-process, so
+      # they fan out with xdist; Ubuntu stays single-process (xdist
+      # startup would eat the win there).
       - name: Test with coverage
+        env:
+          XDIST: ${{ matrix.os == 'macos-latest' && '-n auto' || '' }}
         run: >-
-          uv run pytest -rs
+          uv run pytest -rs $XDIST
           --cov=account_vault
           --cov-report=term-missing
           --cov-fail-under=89
@@ -191,10 +201,34 @@ jobs:
       - name: Run offline demo end to end
         run: uv run python scripts/e2e_offline_demo.py
 
-  live:
-    name: live (headless Chrome)
+  # Real-browser coverage of the CDP path the offline suite fakes:
+  # perception of the JS-rendered fixture, native-input commits,
+  # covered-target recovery, multi-viewport scroll, screenshots.
+  # The runner image ships Chrome; the fixture launches it headless
+  # with a throwaway profile on a loopback debug port and drives
+  # only file:/data: pages (no network, no API keys, deciders are
+  # the offline doubles). A missing browser fails the fixture, so
+  # this gate cannot go green by skipping. Linux-only and one
+  # Python on purpose: what is exercised is Chrome/CDP behavior,
+  # already matrix-covered for OS/Python by the offline jobs.
+  # Run standalone: the harness binds its daemon name at import.
+  #
+  # Two shards on separate runners (a fixed debug port and daemon
+  # name rule out xdist in one job): the busy-load scroll test was
+  # ~2/3 of the file's runtime and set the CI critical path.
+  # The `live` aggregator below keeps the required context name.
+  live-shard:
+    name: live shard (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: load
+            k: "scroll_commit_lag_under_main_thread_load"
+          - shard: rest
+            k: "not scroll_commit_lag_under_main_thread_load"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -205,26 +239,25 @@ jobs:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: "**/uv.lock"
-          cache-suffix: live
+          cache-suffix: live-${{ matrix.shard }}
 
       - name: Install dependencies
         run: uv sync --locked --dev
 
-      # Real-browser coverage of the CDP path the offline suite fakes:
-      # perception of the JS-rendered fixture, native-input commits,
-      # covered-target recovery, multi-viewport scroll, screenshots.
-      # The runner image ships Chrome; the fixture launches it headless
-      # with a throwaway profile on a loopback debug port and drives
-      # only file:/data: pages (no network, no API keys, deciders are
-      # the offline doubles). A missing browser fails the fixture, so
-      # this gate cannot go green by skipping. Linux-only and one
-      # Python on purpose: what is exercised is Chrome/CDP behavior,
-      # already matrix-covered for OS/Python by the offline jobs.
-      # Run standalone: the harness binds its daemon name at import.
       - name: Show Chrome version
         run: google-chrome --version || chromium --version || chromium-browser --version
 
       - name: Run live CDP tests
         env:
           ACCOUNT_VAULT_LIVE: "1"
-        run: uv run pytest -rs tests/test_live_cdp.py
+        run: uv run pytest -rs tests/test_live_cdp.py -k "${{ matrix.k }}"
+
+  live:
+    name: live (headless Chrome)
+    needs: live-shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both shards green
+        run: test "${{ needs.live-shard.result }}" = "success"
