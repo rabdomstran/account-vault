@@ -31,9 +31,18 @@ local = [
     "transformers>=5.19",
     "torch>=2.5",
     "torchvision>=0.20",
-    "pillow>=11,<13",
+    # >=13: 12.3.0 (last <13) carries 43 GHSA advisories, all fixed in 13.0.0.
+    "pillow>=13,<14",
     "accelerate>=1.1",
 ]
+
+# browser-harness==0.1.13 (latest, exact-pinned above) pins
+# pillow==12.3.0, which carries 43 GHSA advisories all fixed in
+# 13.0.0. Override until upstream releases against pillow>=13;
+# the override must keep passing tests/test_harness_contract.py
+# plus the live CDP suite (Pillow is harness screenshot glue).
+[tool.uv]
+override-dependencies = ["pillow>=13,<14"]
 
 [build-system]
 requires = ["hatchling"]
