@@ -14,8 +14,8 @@ the CodeQL-coverage PR that added this file.
   tests for `evil.test/api.deepseek.com/` and
   `api.deepseek.com.evil.test`. Open alerts at pass time: **0**.
 - Gap: only `python` was analyzed. In-page JS and workflow files
-  now scanned by a second job (this PR); first run: **0 alerts**
-  in both new languages.
+  now scanned by a second job. First main run raised alert #2
+  (below) — the gap was hiding a real flow.
 
 ## Dependencies (OSV vs `uv export --locked --all-extras --all-groups`, 85 pkgs)
 
@@ -55,8 +55,9 @@ the CodeQL-coverage PR that added this file.
 
 - `static/app.js` innerHTML: every interpolated string goes
   through `escape()`; the rest are numbers from our own JSON.
-- `static/fixture.html` innerHTML: curated in-file data plus the
-  viewer's own search text, served loopback-only by demo.py
-  (Host check + per-process token + Origin check on POST).
+- `static/fixture.html` other innerHTML: curated in-file data
+  only. The one DOM-sourced flow (alert #2 `js/xss-through-dom`,
+  search text → detail page innerHTML) was **real** if low-stakes
+  (loopback demo) and is fixed via textContent.
 - `scripts/` subprocess calls: fixed argv lists, no shell, no
   untrusted input.
