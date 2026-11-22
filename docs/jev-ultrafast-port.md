@@ -189,8 +189,18 @@ reason to exist. (2026-11-22: the live gate now prints that
 distribution every run as `[scroll-commit-lag]`; its first
 Linux sample — max ≈1.02 s idle — keeps 3 s, which Chromium's
 unbounded main-thread/hidden-page commit delays confirm is
-the right order of magnitude. See the audit in
-[latency-results.md](latency-results.md).)
+the right order of magnitude. The loaded sample followed
+(`[scroll-commit-lag-loaded]`, non-passive handler busy
+work): on Linux, 500 ms of blocking work already costs
+≈2.0 s of lag and **1,500 ms reaches/passes the 3 s deadline
+(median 2,999 ms, max 3,015 ms; 3,200 ms → 5,015 ms)** —
+load and the ~1 s throttled-frame quantum stack. So the
+deadline's quantified limit: a page whose main thread is
+blocked ≳1.5 s at dispatch can have a landed scroll
+misrecorded as a no-op (direction dropped until the page
+changes). Any finite constant has this shape; removing it
+needs the agent-layer unconfirmed state below, not a bigger
+number. Audit in [latency-results.md](latency-results.md).)
 
 **Outcome (2026-11-22): the early exit landed** in the narrowed
 form a wider research pass supported — direction-aware,

@@ -540,6 +540,32 @@ is a Linux CI commit-lag distribution). Findings:
   runs, not one — showing max ≪ a proposed value, plus a
   loaded-main-thread sample, which the idle gate does not
   measure.
+- **Loaded sample (added same day): the tail goes past 3 s,
+  sooner than the handler's own duration suggests.**
+  `test_live_scroll_commit_lag_under_main_thread_load` puts
+  a non-passive `wheel` handler doing 0/500/1,500/3,200 ms of
+  busy work on the main thread (the
+  `kWheelEventHandlerRegion` path; the product's polls queue
+  behind the same work) and measures the same quantity.
+  Linux CI (run 45023061499, medians of n=3): busy 0 →
+  48 ms; **500 → 2,015 ms; 1,500 → 2,999 ms (max 3,015 ms);
+  3,200 → 5,015 ms**. Load and the idle gate's ~1 s frame
+  quantum stack: on Linux, ~1.5 s of blocking wheel-handler
+  work already lands the visible commit at/past the 3 s
+  deadline, and 500 ms of work costs ~2 s. (macOS same test:
+  lag ≈ busy + ~35 ms — no visible quantum.) So the number
+  that matters for the deadline's limit is not the idle
+  1,016 ms max: **a landed scroll on a page whose main
+  thread is blocked ≳1.5 s at dispatch time can be
+  misrecorded as a no-op**, dropping that scroll direction
+  until the page changes enough to re-arm the offer. This
+  is the pre-existing, deliberately-accepted failure shape
+  (any finite deadline has it; raising the constant only
+  moves the blocking duration that defeats it, at equal
+  cost to every genuine no-op), now quantified instead of
+  theoretical. Removing it would need the agent-layer
+  "unconfirmed scroll" state costed in the port notes'
+  options table — out of scope for a constant. 3.0 s stays.
 
 ## Limits — what this does not show
 

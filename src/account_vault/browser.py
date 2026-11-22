@@ -200,7 +200,12 @@ SCREENSHOT_RESPONSE_TIMEOUT = 5
 # live poll seconds later showed 1120). After a scroll act, poll
 # scrollY until it moves in the scrolled direction or this deadline
 # passes; a genuine boundary no-op pays the deadline once, then the
-# existing no-op machinery proceeds exactly as before.
+# existing no-op machinery proceeds exactly as before. The 3s is
+# headroom, not a bound: Linux CI measures idle commit lag to
+# ~1.0s (throttled background frames), and under a main thread
+# blocked ≳1.5s by page work a landed commit can exceed it and be
+# misrecorded as a no-op (docs/latency-results.md, deadline audit;
+# both distributions print from the live gate every CI run).
 SCROLL_SETTLE_TIMEOUT = 3.0
 SCROLL_SETTLE_POLL = 0.05
 
