@@ -117,7 +117,7 @@ def classify_cdp(method: str, params: dict[str, Any], *, read_state: str, marker
             return "snapshot"
         if expression == marker:
             return "snapshot"  # freshness check = full snapshot re-run
-        if expression == "window.scrollY":
+        if expression == "window.scrollY" or expression.startswith("[window.scrollY,"):
             return "settle"  # scroll-commit poll inside observe()
         if expression.startswith("(action => new Promise"):
             return "settle"  # post-input 2-rAF wait inside observe()

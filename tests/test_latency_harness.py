@@ -45,6 +45,9 @@ def test_classify_cdp_distinguishes_settle_from_act_resolve():
     assert (
         classify("Runtime.evaluate", {"expression": "window.scrollY"}, read_state=READ_STATE, marker=MARKER) == "settle"
     )
+    from account_vault.browser import SCROLL_POLL
+
+    assert classify("Runtime.evaluate", {"expression": SCROLL_POLL}, read_state=READ_STATE, marker=MARKER) == "settle"
     resolve = "(action => { const cache=window.__jevFast; return null; })({})"
     assert classify("Runtime.evaluate", {"expression": resolve}, read_state=READ_STATE, marker=MARKER) == "act_resolve"
     guard = "(() => { const c=window.__jevFast; return c ? [c.pageKey(),c.guard(c.nodes.get(3))] : null; })()"

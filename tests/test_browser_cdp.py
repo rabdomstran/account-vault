@@ -314,7 +314,7 @@ def test_observe_after_scroll_waits_for_the_wheel_to_commit(fake_cdp, monkeypatc
     result = instance.observe(screenshot=False)
 
     expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
-    assert expressions[1:-1] == ["window.scrollY"] * 3
+    assert expressions[1:-1] == [browser.SCROLL_POLL] * 3
     assert expressions[-1] == browser.READ_STATE
     assert result["marker"] == "M1"
     assert instance._scroll_before_y is None  # consumed, not sticky
@@ -334,9 +334,63 @@ def test_observe_after_a_dead_scroll_still_observes_at_the_deadline(fake_cdp, mo
     result = instance.observe(screenshot=False)
 
     expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
-    assert expressions[1:-1] == ["window.scrollY"] * 2
+    assert expressions[1:-1] == [browser.SCROLL_POLL] * 2
     assert expressions[-1] == browser.READ_STATE
     assert result["marker"] == "M1"
+
+
+def test_observe_after_boundary_scroll_exits_on_provable_limit(fake_cdp, monkeypatch):
+    # Provable-boundary early exit (docs/latency-results.md): at the
+    # directional limit no scroll event will ever arrive, so two
+    # consecutive at-limit polls end the wait instead of the 3s deadline.
+    instance = bare_browser()
+    instance.after_input = {"kind": "scroll", "delta": 560}
+    instance._scroll_before_y = 2800.0
+    monkeypatch.setattr(browser.time, "sleep", lambda _s: None)
+    fake_cdp.script = [None, [2800, 2800, 1], [2800, 2800, 1]]  # [y, maxY, scale]
+    result = instance.observe(screenshot=False)
+
+    expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
+    assert expressions[1:-1] == [browser.SCROLL_POLL] * 2
+    assert expressions[-1] == browser.READ_STATE
+    assert result["marker"] == "M1"
+
+
+def test_observe_boundary_exit_is_direction_aware_and_needs_two_stable_polls(fake_cdp, monkeypatch):
+    instance = bare_browser()
+    instance.after_input = {"kind": "scroll", "delta": -560}
+    instance._scroll_before_y = 0.0
+    monkeypatch.setattr(browser.time, "sleep", lambda _s: None)
+    # At the top while scrolling up: exit after the second stable poll.
+    fake_cdp.script = [None, [0, 2800, 1], [0, 2800, 1]]
+    instance.observe(screenshot=False)
+    expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
+    assert expressions[1:-1] == [browser.SCROLL_POLL] * 2
+
+    # A growing page revokes the proof between polls: no early exit,
+    # the wait ends only on the later movement.
+    fake_cdp.calls.clear()
+    instance.after_input = {"kind": "scroll", "delta": 560}
+    instance._scroll_before_y = 2800.0
+    fake_cdp.script = [None, [2800, 2800, 1], [2800, 3600, 1], [3000, 3600, 1]]
+    instance.observe(screenshot=False)
+    expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
+    assert expressions[1:-1] == [browser.SCROLL_POLL] * 3
+
+
+def test_observe_boundary_exit_falls_through_under_pinch_zoom(fake_cdp, monkeypatch):
+    # Under pinch-zoom window.scrollY is the layout offset; the wheel
+    # may move only the visual viewport, so at-limit proves nothing.
+    instance = bare_browser()
+    instance.after_input = {"kind": "scroll", "delta": 560}
+    instance._scroll_before_y = 2800.0
+    monkeypatch.setattr(browser, "SCROLL_SETTLE_TIMEOUT", 0.12)
+    monkeypatch.setattr(browser.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(browser.time, "monotonic", Mock(side_effect=[0.0, 0.0, 0.0] + [1.0] * 10))
+    fake_cdp.script = [None, [2800, 2800, 2], [2800, 2800, 2]]
+    instance.observe(screenshot=False)
+    expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
+    assert expressions[1:-1] == [browser.SCROLL_POLL] * 2  # polled to the deadline, no early exit
 
 
 def test_act_scroll_records_the_pre_scroll_viewport_for_observe(monkeypatch):

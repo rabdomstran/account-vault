@@ -177,6 +177,23 @@ SCREENSHOT_RESPONSE_TIMEOUT = 5
 SCROLL_SETTLE_TIMEOUT = 3.0
 SCROLL_SETTLE_POLL = 0.05
 
+# DEVIATION: provable-boundary early exit (docs/latency-results.md,
+# measured boundary observe 3,076 ms). Each poll also reads the max
+# scroll offset, atomically with scrollY. At the directional limit
+# no scroll/scrollend event will ever arrive, so waiting buys no
+# information: two consecutive at-limit polls (snapshot.js's own
+# 2 px offer gate, so offer-time and wait-time agree) end the wait
+# early. This proves only "the root viewport cannot move further
+# that way", never "this wheel was processed" (CDP dispatch
+# resolves on ACK before DOM dispatch), so every unprovable state
+# — movement still possible, growing page, pinch-zoom (scrollY is
+# the layout offset while the wheel may move only the visual
+# viewport) — keeps the full deadline exactly as before.
+SCROLL_POLL = (
+    "[window.scrollY, document.documentElement.scrollHeight - window.innerHeight, "
+    "window.visualViewport ? window.visualViewport.scale : 1]"
+)
+
 
 def _deadline(method: str) -> int:
     return SCREENSHOT_RESPONSE_TIMEOUT if method == "Page.captureScreenshot" else CDP_RESPONSE_TIMEOUT
@@ -310,17 +327,38 @@ class CdpBrowser:
         """Poll until a dispatched wheel scroll commits (see the
         SCROLL_SETTLE_TIMEOUT deviation). Movement in the scrolled
         direction is the exit; a still viewport at the deadline is a
-        genuine no-op and the caller observes it as one."""
+        genuine no-op and the caller observes it as one. Two
+        consecutive polls proving the viewport is already at its
+        directional limit also exit (see SCROLL_POLL): no commit
+        can follow, so the remaining deadline buys no information."""
         if not delta:
             return
         deadline = time.monotonic() + SCROLL_SETTLE_TIMEOUT
+        at_limit_polls = 0
         while time.monotonic() < deadline:
             try:
-                y = self.evaluate("window.scrollY")
+                reading = self.evaluate(SCROLL_POLL)
             except (RuntimeError, StalePage):
                 return  # navigating/interrupted; the snapshot retry owns it
-            if isinstance(y, (int, float)) and not isinstance(y, bool):
+            numbers = (
+                [reading]
+                if isinstance(reading, (int, float)) and not isinstance(reading, bool)
+                else reading
+                if isinstance(reading, (list, tuple))
+                else []
+            )
+            values = [v if isinstance(v, (int, float)) and not isinstance(v, bool) else None for v in numbers[:3]]
+            y = values[0] if values else None
+            max_y = values[1] if len(values) > 1 else None
+            scale = values[2] if len(values) > 2 else None
+            if y is not None:
                 if (delta > 0 and y > before_y) or (delta < 0 and y < before_y):
+                    return
+                at_limit = (
+                    max_y is not None and scale == 1 and ((delta > 0 and y >= max_y - 2) or (delta < 0 and y <= 0))
+                )
+                at_limit_polls = at_limit_polls + 1 if at_limit else 0
+                if at_limit_polls >= 2:
                     return
             time.sleep(SCROLL_SETTLE_POLL)
 
