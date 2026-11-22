@@ -146,7 +146,7 @@ def _verify_daemon_kind(opt_in: bool) -> str | None:
 # midpoint), yet the run reports success and submits the field empty or
 # wrong (upstream issue #227, fill half; enumeration landed earlier).
 # Fills for these types commit through the native value setter inside
-# the act resolver below. The JS list there mirrors this set.
+# the act resolver (act.js). Its JS list is generated from this set.
 NATIVE_FILL_TYPES = frozenset({"date", "datetime-local", "time", "month", "week", "color", "range"})
 
 # DEVIATION: explicit CDP IPC deadlines (upstream issue #14, PRs #97/#19,
@@ -199,8 +199,25 @@ def _deadline(method: str) -> int:
     return SCREENSHOT_RESPONSE_TIMEOUT if method == "Page.captureScreenshot" else CDP_RESPONSE_TIMEOUT
 
 
-# Atomically read visible content and controls, preserving actual DOM node identity.
-READ_STATE = Path(__file__).with_name("snapshot.js").read_text(encoding="utf-8")
+def _native_fill_js() -> str:
+    return "[" + ",".join(f"'{t}'" for t in sorted(NATIVE_FILL_TYPES)) + "]"
+
+
+# In-page programs live beside snapshot.js as .js files, loaded once:
+# READ_STATE observes, AFTER_INPUT_SETTLE waits out the post-input settle,
+# ACT_RESOLVER re-resolves a target's geometry/occlusion before input.
+# act.js carries a __NATIVE_FILL_TYPES__ token so the JS list cannot drift
+# from the Python frozenset above.
+_PACKAGE_DIR = Path(__file__).parent
+READ_STATE = (_PACKAGE_DIR / "snapshot.js").read_text(encoding="utf-8")
+AFTER_INPUT_SETTLE = (_PACKAGE_DIR / "settle.js").read_text(encoding="utf-8").rstrip("\n")
+ACT_RESOLVER = (
+    (_PACKAGE_DIR / "act.js")
+    .read_text(encoding="utf-8")
+    .rstrip("\n")
+    .replace("__NATIVE_FILL_TYPES__", _native_fill_js())
+)
+assert "__NATIVE_FILL_TYPES__" not in ACT_RESOLVER  # token replaced above
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
 
 
@@ -215,6 +232,18 @@ class CoveredTarget(StalePage):
     recorded in the snapshot cache, and the next observe omits it until
     its centre is hittable again -- so re-observing is always safe.
     """
+
+
+def _evaluated_value(response: dict[str, Any], interrupted: str | None = None) -> Any:
+    """Unwrap a Runtime.evaluate response. An exception during a select or
+    native fill may follow a real mutation, so those callers pass an
+    `interrupted` message and get a RuntimeError (inspect, never retry);
+    otherwise the document simply changed under the evaluation."""
+    if response.get("exceptionDetails"):
+        if interrupted is not None:
+            raise RuntimeError(interrupted)
+        raise StalePage("Document changed during evaluation")
+    return response.get("result", {}).get("value")
 
 
 class CdpBrowser:
@@ -256,10 +285,7 @@ class CdpBrowser:
         return cdp(method, session_id=self.session, _response_timeout=_deadline(method), **params)
 
     def evaluate(self, expression: str) -> Any:
-        response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
-        if response.get("exceptionDetails"):
-            raise StalePage("Document changed during evaluation")
-        return response.get("result", {}).get("value")
+        return _evaluated_value(self.call("Runtime.evaluate", expression=expression, returnByValue=True))
 
     def observe(self, screenshot: bool = True) -> dict[str, Any]:
         acted: dict[str, Any] | None = None
@@ -270,29 +296,7 @@ class CdpBrowser:
             try:
                 self.call(
                     "Runtime.evaluate",
-                    expression="""(action => new Promise(resolve => {
-                      const field=window.__jevFast?.nodes.get(action.node);
-                      const autocomplete=action.kind==='fill' && field?.getAttribute('role')==='combobox';
-                      let frames=0, stopped=false;
-                      const finish=()=>{stopped=true;resolve()};
-                      setTimeout(finish,autocomplete ? 200 : 50);
-                      const ready=()=>{
-                        if (stopped) return;
-                        const ids=(field?.getAttribute('aria-controls')||field?.getAttribute('aria-owns')||'')
-                          .split(/\\s+/).filter(Boolean);
-                        const roots=ids.length ? ids.map(id=>document.getElementById(id)).filter(Boolean) : [document];
-                        const options=roots.flatMap(root=>[...root.querySelectorAll('[role="option"]')]);
-                        if (++frames>=2 && (!autocomplete || options.some(e=>{
-                          const r=e.getBoundingClientRect();
-                          return r.width && r.height && r.bottom>0 && r.top<innerHeight &&
-                            e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
-                        }))) finish();
-                        else requestAnimationFrame(ready);
-                      };
-                      requestAnimationFrame(ready);
-                    }))("""
-                    + json.dumps(action)
-                    + ")",
+                    expression=AFTER_INPUT_SETTLE + "(" + json.dumps(action) + ")",
                     awaitPromise=True,
                     returnByValue=True,
                 )
@@ -307,21 +311,23 @@ class CdpBrowser:
         # the capture stalls -- upstream PR #43); on an opted-in local
         # (everyday) browser it must never steal the foreground (#16).
         activate = screenshot and getattr(self, "browser_kind", None) in {"cdp", "cloud"}
+        last_error: StalePage | None = None
         for attempt in range(10):
             try:
                 result = browser_operation(
                     {"operation": "observe", "session": self.session, "screenshot": screenshot, "activate": activate}
                 )
-            except StalePage:
-                if attempt == 9:
-                    raise
-                time.sleep(0.02)
+            except StalePage as error:
+                last_error = error
+                if attempt < 9:
+                    time.sleep(0.02)
             else:
                 # This observation's offered set is current (covered
                 # nodes omitted, restored nodes back); trust it again.
                 self._offer_stale = False
                 return result
-        raise StalePage("Page did not settle")
+        assert last_error is not None  # the tenth failure lands here
+        raise last_error
 
     def _await_scroll_commit(self, before_y: float, delta: float) -> None:
         """Poll until a dispatched wheel scroll commits (see the
@@ -425,19 +431,19 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
         return cdp(method, session_id=session, _response_timeout=_deadline(method), **params)
 
     def evaluate(expression: str) -> Any:
-        result = call("Runtime.evaluate", expression=expression, returnByValue=True)
-        if result.get("exceptionDetails"):
-            # A select or a native fill may already have mutated the page
-            # when evaluation dies, so surface both as RuntimeError
-            # (inspect before retrying), never the retryable StalePage.
-            if operation == "act":
-                action = request["action"]
-                if action["kind"] == "select":
-                    raise RuntimeError("Dropdown execution was interrupted; inspect before retrying.")
-                if action["kind"] == "fill" and action.get("input_type") in NATIVE_FILL_TYPES:
-                    raise RuntimeError("Native input execution was interrupted; inspect before retrying.")
-            raise StalePage("Document changed during evaluation")
-        return result.get("result", {}).get("value")
+        # A select or a native fill may already have mutated the page when
+        # evaluation dies, so those surface as RuntimeError (inspect before
+        # retrying), never the retryable StalePage.
+        interrupted = None
+        if operation == "act":
+            action = request["action"]
+            if action["kind"] == "select":
+                interrupted = "Dropdown execution was interrupted; inspect before retrying."
+            elif action["kind"] == "fill" and action.get("input_type") in NATIVE_FILL_TYPES:
+                interrupted = "Native input execution was interrupted; inspect before retrying."
+        return _evaluated_value(
+            call("Runtime.evaluate", expression=expression, returnByValue=True), interrupted=interrupted
+        )
 
     if operation == "act":
         action = request["action"]
@@ -452,78 +458,7 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
             # path inside the evaluation needs it (#227). It rides along
             # for every kind and is ignored by the others.
             payload = {**action, "text": request.get("text")}
-            target = evaluate(
-                """(action => {
-              const cache=window.__jevFast, e=cache?.nodes.get(action.node);
-              if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
-                  !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
-              if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
-              const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
-              if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-              cache.hits ??= ((el,px,py)=>el.contains(document.elementFromPoint(px,py)));
-              if (!cache.hits(e,x,y)) {
-                // DEVIATION: remember the covered node so the snapshot
-                // omits it until hittable again (upstream PR #245).
-                // Proven before any input -- including the SELECT
-                // mutation below -- so re-observing cannot double-act.
-                (cache.covered ??= new Set()).add(action.node);
-                return {covered:true};
-              }
-              if (action.kind==='select') {
-                if (e.tagName!=='SELECT') return null;
-                // DEVIATION: upstream checks that SOME enabled option has the
-                // value, then assigns e.value — whose setter selects the
-                // first option with that value, disabled ones included, so
-                // duplicate-valued options pick the wrong row (upstream
-                // issue #216). Select the exact observed option_index
-                // instead (falling back to value+label for old snapshots).
-                let idx = Number.isInteger(action.option_index) ? action.option_index
-                  : [...e.options].findIndex(o=>o.value===action.value &&
-                      !o.disabled && !o.closest('optgroup[disabled]'));
-                const chosen = e.options[idx];
-                if (!chosen || chosen.disabled || chosen.closest('optgroup[disabled]')) return null;
-                e.selectedIndex = idx;
-                e.dispatchEvent(new Event('input',{bubbles:true}));
-                e.dispatchEvent(new Event('change',{bubbles:true}));
-              }
-              if (action.kind==='fill' && ['date','datetime-local','time','month','week','color','range']
-                  .includes((e.type||'').toLowerCase())) {
-                // DEVIATION: Input.insertText does not commit into a
-                // native date/time/color/range control, so the generic
-                // click-and-type path silently submits these fields
-                // empty (or, for range, at its centre-click value) --
-                // upstream issue #227. Commit through the native
-                // HTMLInputElement value setter instead (so React's
-                // value tracker sees a real change), then fire the
-                // events an edit would. The browser stays the format
-                // authority: an invalid date/time string sanitises to
-                // empty. Color/range sanitise to a default instead of
-                // empty, so those two are shape-checked up front. A
-                // rejected value restores the previous one and reports
-                // distinctly -- never as a stale target the tick loop
-                // would retry with the same text forever. Still after
-                // the covered check above: no mutation before that.
-                if (typeof action.text!=='string' || !action.text.trim())
-                  return {rejected:'no value supplied for '+e.type+' input'};
-                if (e.type==='color' && !/^#[0-9a-f]{6}$/i.test(action.text))
-                  return {rejected:'not a valid color value: '+action.text};
-                if (e.type==='range' && !Number.isFinite(Number(action.text)))
-                  return {rejected:'not a valid range value: '+action.text};
-                e.focus();
-                const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;
-                const assign=v=>{ if (setter) setter.call(e,v); else e.value=v; };
-                const before=e.value;
-                assign(action.text);
-                if (!e.value) { assign(before); return {rejected:'not a valid '+e.type+' value: '+action.text}; }
-                e.dispatchEvent(new Event('input',{bubbles:true}));
-                e.dispatchEvent(new Event('change',{bubbles:true}));
-                return {x,y,filled:true,value:e.value};
-              }
-              return {x,y};
-            })("""
-                + json.dumps(payload)
-                + ")"
-            )
+            target = evaluate(ACT_RESOLVER + "(" + json.dumps(payload) + ")")
             if target == {"covered": True}:
                 raise CoveredTarget("Target is covered. Observe again.")
             if target is None:
