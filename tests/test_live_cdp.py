@@ -172,6 +172,56 @@ def test_live_loop_drives_fixture_to_done(dedicated_chrome):
         assert "Free cancellation included" in page["text"]
 
 
+# --- combobox settle: observe waits for suggestions inside its cap ---------
+# The post-fill settle in browser.py waits up to 200 ms for combobox
+# options (50 ms otherwise) so the decider never chooses from an
+# incomplete popup. Pin both sides of the cap with real timers.
+
+
+def _combobox_url(delay_ms):
+    from urllib.parse import quote
+
+    html = f"""<!doctype html><title>Combobox settle checks</title>
+<label>City <input id="city" role="combobox" aria-expanded="false"
+ aria-controls="sb" autocomplete="off"></label>
+<ul id="sb" role="listbox"></ul>
+<script>
+const i = document.getElementById('city'), sb = document.getElementById('sb');
+i.addEventListener('input', () => {{
+  sb.innerHTML = '';
+  setTimeout(() => {{
+    if (!i.value) return;
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option'); li.textContent = 'Lisbon, Portugal';
+    sb.appendChild(li); i.setAttribute('aria-expanded', 'true');
+  }}, {delay_ms});
+}});
+</script>"""
+    return "data:text/html," + quote(html)
+
+
+def test_live_combobox_settle_waits_inside_cap_and_gives_up_past_it(dedicated_chrome):
+    from account_vault.browser import CdpBrowser
+
+    for delay, offered in ((120, True), (400, False)):
+        browser = CdpBrowser(_combobox_url(delay))
+        try:
+            page = browser.observe(screenshot=False)
+            fill = next(a for a in page["actions"] if a["kind"] == "fill")
+            browser.act(fill, page, text="Lis")
+            started = time.perf_counter()
+            page = browser.observe(screenshot=False)
+            waited_ms = (time.perf_counter() - started) * 1000
+            labels = [a["label"] for a in page["actions"]]
+            assert ("Lisbon, Portugal" in labels) is offered, (delay, labels, waited_ms)
+            if offered:
+                assert waited_ms > 100  # waited for the 120 ms render, past the 50 ms cap
+            else:
+                assert waited_ms < 350  # gave up at the 200 ms cap, not the 400 ms render
+        finally:
+            browser.close()
+
+
 # --- upstream PR #245: a covered control leaves the offer until uncovered --
 # Real geometry only exists in a real browser: a fixed overlay covers one
 # button's centre, a second button stays hittable. Decision-layer drops

@@ -6,7 +6,9 @@
   code changes; timing wraps the injected browser/decider and taps the
   `account_vault.browser.cdp` seam)
 - **Raw data:** [latency-measurement.json](latency-measurement.json)
-  (every run, every tick; summaries below are computed from it)
+  (every run, every tick; summaries below are computed from it);
+  settle-paths follow-up in
+  [latency-measurement-settle.json](latency-measurement-settle.json)
 - **Compared against:** upstream
   [docs/performance.md](https://github.com/browser-use/jev-ultrafast/blob/main/docs/performance.md)
   with its `flights-measurement.json` / `full-speed-measurement.json`,
@@ -271,6 +273,84 @@ freshness argument, not a silent optimization). **Attempted the
 same day — see the Follow-up: the static half landed, the CDP
 half measured flat and was reverted.**
 
+## Settle paths: scroll, wait, combobox (follow-up, 2026-11-22)
+
+The first measurement's Limits noted these paths were never
+exercised. The harness now has one CDP loop config each plus
+direct mechanism micro-benchmarks
+([latency-measurement-settle.json](latency-measurement-settle.json);
+same setup, same machine — the original configs re-ran within
+noise of the table above: catalog step p50 33.38 vs 33.47,
+fixture 33.51 vs 33.36; static rows reflect the cheap-fresh
+cache). The suspicion was correct: this is where the remaining
+cost hides, and one case dwarfs everything else in the system.
+
+| Path (per acted step) | n | Step p50 | Settle p50 | Act p50 | Snapshot p50 |
+|---|---:|---:|---:|---:|---:|
+| click/fill baseline (catalog/fixture) | 165 | 33.4–33.5 | 25.6–26.6 | 2.5–3.9 | 3.3–6.5 |
+| scroll steps (tall page) | 60 | 49.8 | 34.0 | 11.7 | 4.1 |
+| wait steps (700 ms reveal) | 60 | 112.6 | 0.0 | 106.9 | 5.3 |
+| combobox fill (150 ms suggestion) | 15 | 181.4 | 169.9 | 5.6 | 5.7 |
+| combobox option click | 15 | 31.8 | 24.8 | 4.0 | 2.9 |
+
+Mechanisms isolated (direct browser drive, no Agent):
+
+| Mechanism | Distribution |
+|---|---|
+| scroll act+observe (n=24) | act p50 15.0, settle p50 34.2 / p95 51.0, observe wall p50 35.6 |
+| **scroll dispatched at the page boundary (n=5)** | **observe wall p50 3,076 ms** — the full `SCROLL_SETTLE_TIMEOUT` (3 s) commit poll, paid inside one observe |
+| wait act (n=20) | act p50 108.9 (the fixed 100 ms sleep + freshness/dispatch), settle after = 0.0 exactly |
+| combobox settle, suggestion at 0 / 120 / 300 ms (n=15 each) | settle p50 25.4 / 138.8 / 207.8; suggestion offered 15/15, 15/15, **0/15** |
+
+Findings, in cost order:
+
+1. **A boundary scroll is the most expensive single operation
+   in the loop: ≈3.08 s inside one observe** — ~90 baseline
+   steps' worth. It is the deliberate commit deadline from the
+   #212/#209 interaction fix (a landed-but-unread scroll must
+   not be recorded as a no-op), and in a normal run it is paid
+   at most once per unchanged page: the unchanged observation
+   then drops `scroll_down` from the next offer while the
+   fingerprint holds. But any task that legitimately probes a
+   bottom/top boundary on several distinct pages pays 3 s per
+   probe, and nothing in the step distribution warns about it
+   unless settle is timed separately — which is the argument
+   for this harness existing. Ordinary (moving) scrolls exit
+   the poll as soon as `scrollY` moves: settle p50 34 ms,
+   p95 51 ms, i.e. the 2-rAF wait plus one or two 50 ms polls.
+   Scroll acts themselves (p50 12–15 ms) cost 3–5× a click act.
+2. **Combobox settle does exactly what its cap says.** Settle
+   tracks suggestion arrival inside the cap (0 ms → 25 ms,
+   the 2-rAF floor; 120 ms → 139 ms; loop fill at 150 ms →
+   170 ms, 93.5% of that step) and gives up at ≈208 ms: at a
+   300 ms suggestion delay the option was offered **0/15** times
+   on the post-fill observation. Past-cap autocomplete is not
+   an error — it costs one extra decide+wait cycle (~110 ms
+   polling step) before the option becomes clickable — but a
+   decider that re-fills instead of waiting would retype
+   forever (upstream #23's failure shape). Which behaviour a
+   real model shows here is unmeasured.
+3. **WAIT is honest but coarse:** 107–109 ms act (100 ms fixed
+   sleep), zero settle after it (`after_input` stays unset, as
+   designed), so async-reveal polling costs ≈112 ms/step with
+   ~5 ms of snapshot work per poll. The 700 ms reveal took
+   4 waits + 1 click (493 ms of steps; the reveal timer also
+   ran during the ≈321 ms setup — of which ≈290 ms is the
+   constructor's bounded re-observe on an initially
+   element-empty page, the #1 empty-first-observation retry;
+   the scroll page's setup shows the same ≈325 ms for the same
+   reason: below-fold/undisclosed controls are not elements
+   yet). Setup remains excluded from step time, as upstream,
+   but on initially-empty pages it is not free.
+
+Net effect on the earlier verdicts: none change. Settle-class
+waiting dominates every new path even harder than the baseline
+(act+settle 92–96% as measured with doubles), and the absolute
+terms to quote per step are now: click/fill ≈33 ms, scroll
+≈50 ms (3,076 ms at a boundary, once), wait ≈112 ms, combobox
+fill ≈ suggestion delay + ~30 ms up to the 208 ms cap — plus
+whatever the decider costs.
+
 ## Limits — what this does not show
 
 - **No real decide/text model was run.** All decide/text rows are
@@ -282,10 +362,11 @@ half measured flat and was reverted.**
   bot mitigation, tiny DOMs (8–22 elements vs real pages). Settle
   on the live web will be larger and more variable; upstream's
   67 ms average post-action gap on Flights is the nearest anchor.
-- **No scroll/wait/combobox-settle paths exercised.** The tasks
-  never scroll, and fills resolve inside the 50 ms settle cap.
-  The 3 s scroll-commit deadline and 200 ms combobox cap need a
-  tall-page config before their cost can be quoted.
+- **Scroll/wait/combobox paths: measured since** (see Settle
+  paths below), but on single-purpose inline pages — one tall
+  page, one 700 ms reveal, suggestion delays of 0/120/150/300 ms.
+  Compound real-page behaviour (scroll + late autocomplete +
+  network at once) is still unmeasured.
 - **One machine, headless, screenshots off.** Settle tracks frame
   cadence; a 60 Hz or throttled-background tab will differ.
   Screenshot-on observe cost is unmeasured.

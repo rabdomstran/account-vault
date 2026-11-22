@@ -127,6 +127,59 @@ def test_drive_run_static_hotel_reaches_done_with_timed_steps():
         assert stages["other"] > -0.05  # residual stays sane (timer granularity)
 
 
+def _state(text, actions):
+    return {"text": text, "actions": actions}
+
+
+def _click(label, node=7):
+    return {"id": "e1", "kind": "click", "label": label, "node": node, "role": "button"}
+
+
+def test_settle_scenario_deciders_pick_scroll_wait_and_combobox_paths():
+    from account_vault.agent import _check_decision
+
+    scroll_down = {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560}
+    wait = {"id": "wait", "kind": "wait", "label": "Wait for the page to update"}
+
+    decider, _ = harness._scroll_parts()
+    decision = decider.choose(_state("Top of a tall page", [scroll_down, wait]), "goal", [])
+    _check_decision(decision)
+    assert decision["choice"] == "scroll_down"
+    decision = decider.choose(_state("Deep done", [_click("Deep target")]), "goal", [])
+    assert decision["choice"] == "DONE"
+    decision = decider.choose(_state("pending", [_click("Deep target"), scroll_down]), "goal", [])
+    assert decision["choice"] == "e1" and decision["operation"] == "CLICK"
+
+    decider, _ = harness._wait_parts()
+    decision = decider.choose(_state("loading", [wait]), "goal", [])
+    _check_decision(decision)
+    assert decision["choice"] == "wait"
+    decision = decider.choose(_state("loaded", [_click("Loaded action"), wait]), "goal", [])
+    assert decision["choice"] == "e1"
+
+    decider, provider = harness._combobox_parts()
+    fill = {"id": "e1", "kind": "fill", "label": "City", "node": 3, "role": "combobox", "value": ""}
+    decision = decider.choose(_state("pending", [fill, wait]), "goal", [])
+    _check_decision(decision)
+    assert decision["operation"] == "TYPE_TEXT"
+    assert provider({"field": {"label": "City"}})[0] == "Lis"
+    filled = {**fill, "value": "Lis"}
+    option = {"id": "e2", "kind": "click", "label": "Lisbon, Portugal", "node": 9, "role": "option"}
+    decision = decider.choose(_state("pending", [filled, option, wait]), "goal", [])
+    assert decision["choice"] == "e2"
+    decision = decider.choose(_state("pending", [filled, wait]), "goal", [])
+    assert decision["choice"] == "wait"  # suggestions late (past the settle cap): wait, never guess
+    decision = decider.choose(_state("Selected: Lisbon, Portugal", [filled]), "goal", [])
+    assert decision["choice"] == "DONE"
+
+
+def test_configs_include_settle_paths_only_on_cdp():
+    names = [c["name"] for c in harness.configs(include_cdp=True)]
+    assert names.index("cdp-scroll") > names.index("cdp-fixture")
+    assert {"cdp-scroll", "cdp-wait", "cdp-combobox"} <= set(names)
+    assert "cdp-scroll" not in [c["name"] for c in harness.configs(include_cdp=False)]
+
+
 def test_micro_static_reports_request_size():
     micro = harness.micro_static(3)
     for label in ("hotel", "catalog"):

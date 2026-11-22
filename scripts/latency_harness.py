@@ -442,6 +442,117 @@ def _fixture_parts() -> Any:
     return decider, MappingTextProvider({"destination": "Lisbon"})
 
 
+# --- settle-path scenarios (scroll / wait / combobox) -----------------------
+# The travel configs above never scroll, wait, or fill a combobox, so
+# the three settle variants built for those paths (2-rAF cap 50 ms,
+# combobox cap 200 ms, wheel-commit poll up to SCROLL_SETTLE_TIMEOUT)
+# went unmeasured in the first results. These inline pages + rule
+# deciders exercise exactly one variant each, CDP-only: the static
+# backend has no timers, its scroll act is a stub, and its settle is
+# zero by construction.
+
+SCROLL_HTML = """<!doctype html><title>Deep page</title>
+<style>body{margin:0;font:18px sans-serif}.spacer{height:900px}
+#deep{width:200px;height:44px}#status{margin:20px}</style>
+<p>Top of a tall page</p><div class="spacer"></div><div class="spacer"></div>
+<div class="spacer"></div>
+<button id="deep" onclick="window.__clicks.push('deep');
+document.getElementById('status').textContent='Deep done'">Deep target</button>
+<p id="status">pending</p><script>window.__clicks=[]</script>"""
+
+WAIT_HTML = """<!doctype html><title>Async reveal</title>
+<p id="status">loading</p>
+<button id="late" style="display:none"
+ onclick="document.getElementById('status').textContent='Ready done'">Loaded action</button>
+<script>setTimeout(() => {
+  document.getElementById('late').style.display = 'block';
+  document.getElementById('status').textContent = 'loaded';
+}, 700);</script>"""
+
+
+def combobox_html(delay_ms: int) -> str:
+    return f"""<!doctype html><title>Combobox settle</title>
+<label>City <input id="city" role="combobox" aria-expanded="false"
+ aria-controls="sb" autocomplete="off"></label>
+<ul id="sb" role="listbox"></ul><p id="status">pending</p>
+<script>
+const i = document.getElementById('city'), sb = document.getElementById('sb'),
+      st = document.getElementById('status');
+i.addEventListener('input', () => {{
+  sb.innerHTML = ''; i.setAttribute('aria-expanded', 'false');
+  const token = String(Math.random()); i.dataset.token = token;
+  setTimeout(() => {{
+    if (!i.value || i.dataset.token !== token) return;
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option'); li.id = 'opt1';
+    li.textContent = 'Lisbon, Portugal';
+    li.onclick = () => {{ i.value = 'Lisbon, Portugal'; sb.innerHTML = '';
+      st.textContent = 'Selected: Lisbon, Portugal'; }};
+    sb.appendChild(li); i.setAttribute('aria-expanded', 'true');
+  }}, {delay_ms});
+}});
+</script>"""
+
+
+def _data_url(html: str) -> str:
+    from urllib.parse import quote
+
+    return "data:text/html," + quote(html)
+
+
+def _scroll_parts() -> Any:
+    from account_vault.model import HeuristicDecider, MappingTextProvider, action_space
+
+    class ScrollDecider(HeuristicDecider):
+        def choose(self, state: Any, goal: str, history: Any) -> Any:
+            _, targets, controls = action_space(state["actions"])
+            if "Deep done" in state["text"]:
+                return self._decision("DONE", None, targets, controls, state, goal, history)
+            for action in targets.get("CLICK", {}).values():
+                if action["label"] == "Deep target":
+                    return self._decision("CLICK", action, targets, controls, state, goal, history)
+            if "SCROLL_DOWN" in controls:
+                return self._decision("SCROLL_DOWN", None, targets, controls, state, goal, history)
+            return self._decision("BLOCKED", None, targets, controls, state, goal, history)
+
+    return ScrollDecider(), MappingTextProvider({})
+
+
+def _wait_parts() -> Any:
+    from account_vault.model import HeuristicDecider, MappingTextProvider, action_space
+
+    class WaitDecider(HeuristicDecider):
+        def choose(self, state: Any, goal: str, history: Any) -> Any:
+            _, targets, controls = action_space(state["actions"])
+            if "Ready done" in state["text"]:
+                return self._decision("DONE", None, targets, controls, state, goal, history)
+            for action in targets.get("CLICK", {}).values():
+                if action["label"] == "Loaded action":
+                    return self._decision("CLICK", action, targets, controls, state, goal, history)
+            return self._decision("WAIT", None, targets, controls, state, goal, history)
+
+    return WaitDecider(), MappingTextProvider({})
+
+
+def _combobox_parts() -> Any:
+    from account_vault.model import HeuristicDecider, MappingTextProvider, action_space
+
+    class ComboboxDecider(HeuristicDecider):
+        def choose(self, state: Any, goal: str, history: Any) -> Any:
+            _, targets, controls = action_space(state["actions"])
+            if "Selected: Lisbon, Portugal" in state["text"]:
+                return self._decision("DONE", None, targets, controls, state, goal, history)
+            for action in targets.get("CLICK", {}).values():
+                if "Lisbon, Portugal" in action["label"]:
+                    return self._decision("CLICK", action, targets, controls, state, goal, history)
+            for action in targets.get("TYPE_TEXT", {}).values():
+                if not str(action.get("value", "")).strip():
+                    return self._decision("TYPE_TEXT", action, targets, controls, state, goal, history)
+            return self._decision("WAIT", None, targets, controls, state, goal, history)
+
+    return ComboboxDecider(), MappingTextProvider({"city": "Lis"})
+
+
 def _static_browser(url: str) -> Any:
     from account_vault.static_dom import StaticBrowser
 
@@ -496,6 +607,33 @@ def configs(include_cdp: bool) -> list[dict[str, Any]]:
                 "goal": TRAVEL_GOAL,
                 "make_browser": _cdp_browser,
                 "make_parts": _fixture_parts,
+            },
+            {
+                "name": "cdp-scroll",
+                "backend": "cdp",
+                "page": "inline tall page (3x900px spacers, button below fold)",
+                "url": _data_url(SCROLL_HTML),
+                "goal": "Click the Deep target button",
+                "make_browser": _cdp_browser,
+                "make_parts": _scroll_parts,
+            },
+            {
+                "name": "cdp-wait",
+                "backend": "cdp",
+                "page": "inline async reveal (button appears after 700 ms)",
+                "url": _data_url(WAIT_HTML),
+                "goal": "Click Loaded action when it appears",
+                "make_browser": _cdp_browser,
+                "make_parts": _wait_parts,
+            },
+            {
+                "name": "cdp-combobox",
+                "backend": "cdp",
+                "page": "inline combobox (suggestion renders 150 ms after input)",
+                "url": _data_url(combobox_html(150)),
+                "goal": "Choose Lisbon, Portugal in the City field",
+                "make_browser": _cdp_browser,
+                "make_parts": _combobox_parts,
             },
         ]
     return base
@@ -620,6 +758,114 @@ def micro_cdp(n: int) -> dict[str, Any]:
         tap.restore()
 
 
+def _bucket_ms(recorder: Recorder, bucket: str, stage: str) -> float:
+    return sum(e["ns"] for e in recorder.bucket_events(bucket) if e["stage"] == stage) / 1e6
+
+
+def micro_cdp_mechanisms(quick: bool = False) -> dict[str, Any]:
+    """Isolate each settle variant the travel tasks never reach.
+
+    Drives TimedBrowser directly (no Agent): scroll act+observe pairs
+    (wheel-commit poll), a scroll dispatched at the page boundary
+    (the poll's full 3 s deadline), WAIT acts (fixed sleep, no
+    settle after), and combobox fills whose suggestions render
+    before / inside / after the 200 ms settle cap.
+    """
+    scroll_n, boundary_n, wait_n, combo_n = (6, 2, 5, 5) if quick else (24, 5, 20, 15)
+    recorder = Recorder()
+    tap = CdpTap(recorder)
+    tap.install()
+    try:
+        out: dict[str, Any] = {}
+
+        browser = _cdp_browser(_data_url(SCROLL_HTML))
+        timed = TimedBrowser(browser, recorder)
+        try:
+            recorder.bucket = "mech-scroll-setup"
+            page = timed.observe(screenshot=False)
+            act_ms, settle_ms, observe_ms = [], [], []
+            direction = "scroll_down"
+            for i in range(scroll_n):
+                action = next((a for a in page["actions"] if a.get("id") == direction), None)
+                if action is None:
+                    direction = "scroll_up" if direction == "scroll_down" else "scroll_down"
+                    action = next(a for a in page["actions"] if a.get("id") == direction)
+                bucket = f"mech-scroll-{i}"
+                recorder.bucket = bucket
+                timed.act(action, page)
+                page = timed.observe(screenshot=False)
+                act_ms.append(_bucket_ms(recorder, bucket, "wall_act"))
+                settle_ms.append(_bucket_ms(recorder, bucket, "settle"))
+                observe_ms.append(_bucket_ms(recorder, bucket, "wall_observe"))
+            out["scroll"] = {
+                "act_ms": summarize(act_ms),
+                "settle_ms": summarize(settle_ms),
+                "observe_wall_ms": summarize(observe_ms),
+            }
+            # Boundary: drive to the bottom, then dispatch wheels that
+            # cannot move the viewport; observe pays the commit deadline.
+            recorder.bucket = "mech-scroll-tobottom"
+            while any(a.get("id") == "scroll_down" for a in page["actions"]):
+                down = next(a for a in page["actions"] if a.get("id") == "scroll_down")
+                timed.act(down, page)
+                page = timed.observe(screenshot=False)
+            boundary_observe = []
+            stuck = {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560}
+            for i in range(boundary_n):
+                bucket = f"mech-boundary-{i}"
+                recorder.bucket = bucket
+                timed.act(stuck, page)
+                page = timed.observe(screenshot=False)
+                boundary_observe.append(_bucket_ms(recorder, bucket, "wall_observe"))
+            out["scroll_boundary"] = {"observe_wall_ms": summarize(boundary_observe)}
+
+            wait_act, wait_settle = [], []
+            wait = next(a for a in page["actions"] if a.get("id") == "wait")
+            for i in range(wait_n):
+                bucket = f"mech-wait-{i}"
+                recorder.bucket = bucket
+                timed.act(wait, page)
+                page = timed.observe(screenshot=False)
+                wait_act.append(_bucket_ms(recorder, bucket, "wall_act"))
+                wait_settle.append(_bucket_ms(recorder, bucket, "settle"))
+            out["wait"] = {"act_ms": summarize(wait_act), "settle_after_ms": summarize(wait_settle)}
+        finally:
+            browser.close()
+
+        combo: dict[str, Any] = {}
+        for delay in (0, 120, 300):
+            browser = _cdp_browser(_data_url(combobox_html(delay)))
+            timed = TimedBrowser(browser, recorder)
+            try:
+                settles, observes, offered = [], [], 0
+                for i in range(combo_n):
+                    recorder.bucket = f"mech-combo-{delay}-reset"
+                    timed.evaluate(
+                        "(()=>{const i=document.getElementById('city');i.value='';i.dataset.token='';"
+                        "document.getElementById('sb').innerHTML=''})()"
+                    )
+                    bucket = f"mech-combo-{delay}-{i}"
+                    recorder.bucket = bucket
+                    page = timed.observe(screenshot=False)
+                    fill = next(a for a in page["actions"] if a["kind"] == "fill")
+                    timed.act(fill, page, text="Lis")
+                    page = timed.observe(screenshot=False)
+                    settles.append(_bucket_ms(recorder, bucket, "settle"))
+                    observes.append(_bucket_ms(recorder, bucket, "wall_observe"))
+                    offered += int(any("Lisbon, Portugal" in a["label"] for a in page["actions"]))
+                combo[f"delay_{delay}ms"] = {
+                    "settle_ms": summarize(settles),
+                    "observe_wall_ms": summarize(observes),
+                    "suggestion_offered": f"{offered}/{combo_n}",
+                }
+            finally:
+                browser.close()
+        out["combobox"] = combo
+        return out
+    finally:
+        tap.restore()
+
+
 # --------------------------------------------------------------------------
 # Environment, reporting, CLI
 # --------------------------------------------------------------------------
@@ -673,6 +919,19 @@ def print_report(results: dict[str, Any]) -> None:
             f"fresh {_fmt(m['fresh_ms'])} ms | build_request {_fmt(m['build_choose_request_ms'])} ms | "
             f"request {m['request_json_chars']} chars"
         )
+    mech = results["micro"].get("cdp_mechanisms", {})
+    if mech:
+        print("== micro (CDP settle mechanisms)")
+        print(
+            f"   scroll: act {_fmt(mech['scroll']['act_ms'])} ms | settle {_fmt(mech['scroll']['settle_ms'])} ms | "
+            f"observe {_fmt(mech['scroll']['observe_wall_ms'])} ms"
+        )
+        print(f"   scroll at boundary: observe {_fmt(mech['scroll_boundary']['observe_wall_ms'])} ms")
+        print(
+            f"   wait: act {_fmt(mech['wait']['act_ms'])} ms | settle after {_fmt(mech['wait']['settle_after_ms'])} ms"
+        )
+        for label, m in mech["combobox"].items():
+            print(f"   combobox {label}: settle {_fmt(m['settle_ms'])} ms | offered {m['suggestion_offered']}")
     for label, m in results["micro"].get("cdp", {}).items():
         print(
             f"   cdp/{label}: elements={m['elements']} observe {_fmt(m['observe_ms'])} ms | "
@@ -704,6 +963,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cdp:
         print("running CDP micro-benchmarks ...", flush=True)
         results["micro"]["cdp"] = micro_cdp(args.micro_n)
+        print("running CDP settle-mechanism micro-benchmarks ...", flush=True)
+        results["micro"]["cdp_mechanisms"] = micro_cdp_mechanisms(quick=args.quick)
 
     serializable = json.loads(json.dumps(results, default=str))
     Path(args.out).write_text(json.dumps(serializable, indent=1), encoding="utf-8")
