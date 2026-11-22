@@ -41,3 +41,26 @@ jobs:
         uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           category: "/language:python"
+
+  # The in-page JS (snapshot/act/settle, static/) and the workflow
+  # files were unscanned until 2026-11 (security pass). Separate
+  # job so the required "Analyze (python)" context keeps its name
+  # and wall-clock; JS/Actions extract build-free like Python.
+  analyze-js-actions:
+    name: Analyze (javascript-typescript, actions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          languages: javascript-typescript, actions
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          category: "/language:javascript-typescript-actions"
