@@ -29,6 +29,11 @@ PORT = int(os.environ.get("ACCOUNT_VAULT_DEMO_PORT", os.environ.get("TYPESAFE_DE
 TOKEN = secrets.token_urlsafe(32)
 LOCK = threading.Lock()
 AGENT: Agent | None = None
+# Inspector-level facts about the current run, kept here and merged into
+# responses by response_state() -- not Agent state (the Agent neither
+# knows nor needs which demo scenario built it).
+SCENARIO: str | None = None
+MODE: str | None = None
 SETTINGS = load_settings()
 
 
@@ -45,13 +50,16 @@ def origin() -> str:
 
 
 def response_state() -> dict[str, Any]:
-    state: dict[str, Any] = (
-        AGENT.snapshot() if AGENT else {"page": None, "status": "idle", "history": [], "decision": None}
-    )
+    if AGENT is None:
+        state: dict[str, Any] = {"page": None, "status": "idle", "history": [], "decision": None}
+        inspector: dict[str, Any] = {}
+    else:
+        state = AGENT.snapshot()
+        inspector = {"scenario": SCENARIO, "mode": MODE}
     # DEVIATION: model name from Settings, not an env fallback that
     # disagrees with .env.example (upstream issue #36); budget key kept
     # as max_steps for the bundled app.js, value is MAX_ACTIONS (#55).
-    return {**state, "text_model": SETTINGS.text_model, "max_steps": MAX_ACTIONS}
+    return {**state, **inspector, "text_model": SETTINGS.text_model, "max_steps": MAX_ACTIONS}
 
 
 def close_browser() -> None:
@@ -88,7 +96,7 @@ def _offline_agent(scenario: str, goal: str) -> Agent:
 
 
 def command(name: str, body: dict[str, Any]) -> dict[str, Any]:
-    global AGENT
+    global AGENT, SCENARIO, MODE
     if name == "reset":
         scenario = body.get("scenario", "flights")
         if scenario not in {"travel", "research", "flights"}:
@@ -115,8 +123,7 @@ def command(name: str, body: dict[str, Any]) -> dict[str, Any]:
                 settings=SETTINGS,
             )
         AGENT = agent
-        agent.state["scenario"] = scenario
-        agent.state["mode"] = mode
+        SCENARIO, MODE = scenario, mode
     else:
         if AGENT is None:
             raise ValueError("Start a demo first")
