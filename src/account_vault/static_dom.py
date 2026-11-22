@@ -242,6 +242,18 @@ class StaticBrowser:
     def _options(self, select: Element) -> list[Element]:
         return [e for e in self._walk(select) if e.tag == "option"]
 
+    def _option_disabled(self, option: Element) -> bool:
+        # Mirror snapshot.js/act.js: an option is unofferable when it or
+        # its <optgroup> is disabled (o.closest('optgroup[disabled]')).
+        if "disabled" in option.attrs:
+            return True
+        current = option.parent
+        while current is not None and current.tag not in {"select", "#root"}:
+            if current.tag == "optgroup" and "disabled" in current.attrs:
+                return True
+            current = current.parent
+        return False
+
     # -- perception helpers (mirror snapshot.js) ---------------------------
 
     def _visible(self, element: Element) -> bool:
@@ -456,6 +468,11 @@ class StaticBrowser:
             if options and 0 <= selected < len(options):
                 return options[selected].get("value", options[selected].inner_text())
             return ""
+        # Browser default: a checkbox/radio with no value attribute has
+        # value "on" (what snapshot.js reads from e.value); every other
+        # control defaults to empty.
+        if element.tag == "input" and element.get("type", "").lower() in {"checkbox", "radio"}:
+            return element.get("value", "on")
         return element.get("value", "")
 
     def _scope_text(self, element: Element) -> str:
@@ -539,7 +556,7 @@ class StaticBrowser:
                 selected = element.selected_index
                 current = options[selected].inner_text() if options and selected is not None and selected >= 0 else ""
                 for option_index, option in enumerate(options):
-                    if option_index == element.selected_index or "disabled" in option.attrs:
+                    if option_index == element.selected_index or self._option_disabled(option):
                         continue
                     actions.append(
                         {
@@ -780,7 +797,7 @@ class StaticBrowser:
             # first-value-match.
             options = self._options(element)
             index = action.get("option_index")
-            if not isinstance(index, int) or not (0 <= index < len(options)) or "disabled" in options[index].attrs:
+            if not isinstance(index, int) or not (0 <= index < len(options)) or self._option_disabled(options[index]):
                 raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
             element.selected_index = index
         elif kind == "click":
