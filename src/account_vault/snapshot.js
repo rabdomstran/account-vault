@@ -2,8 +2,8 @@
 // indexed action table. Ported from jev_ultrafast/snapshot.js (MIT,
 // browser-use/jev-ultrafast). Lines marked DEVIATION fix known upstream
 // coverage bugs; everything else is unchanged so behaviour stays comparable.
-// __ELEMENT_ROLES__ / __SAFE_EXCLUDE__ / __EDITABLE_ROLES__ are replaced at
-// load from browser.py (shared with static_dom.py; see
+// The role / safe-exclude / editable-role lists below arrive as tokens
+// replaced at load from browser.py (shared with static_dom.py; see
 // docs/static-live-parity.md).
 (() => {
   if (!document.body) return null;
