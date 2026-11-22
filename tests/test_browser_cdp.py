@@ -393,6 +393,50 @@ def test_observe_boundary_exit_falls_through_under_pinch_zoom(fake_cdp, monkeypa
     assert expressions[1:-1] == [browser.SCROLL_POLL] * 2  # polled to the deadline, no early exit
 
 
+def test_observe_after_nested_swallow_exits_on_chain_movement(fake_cdp, monkeypatch):
+    # Nested-swallow detection (SCROLL_CHAIN_PROBE): the root could
+    # still move (y=0 of 2800) but a scroller under the wheel point
+    # latched the wheel and moved down 300px -- the wheel was
+    # processed, so one poll ends the wait instead of the 3s deadline.
+    instance = bare_browser()
+    instance.after_input = {"kind": "scroll", "delta": 560}
+    instance._scroll_before_y = 0.0
+    monkeypatch.setattr(browser.time, "sleep", lambda _s: None)
+    fake_cdp.script = [None, [0, 2800, 1, 300, 0]]  # [y, maxY, scale, chainDown, chainUp]
+    result = instance.observe(screenshot=False)
+
+    expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
+    assert expressions[1:-1] == [browser.SCROLL_POLL] * 1
+    assert expressions[-1] == browser.READ_STATE
+    assert result["marker"] == "M1"
+
+
+def test_observe_chain_exit_is_direction_aware(fake_cdp, monkeypatch):
+    # Chain movement against the scrolled direction proves nothing
+    # about this wheel: no exit, the wait ends on the root's own move.
+    instance = bare_browser()
+    instance.after_input = {"kind": "scroll", "delta": 560}
+    instance._scroll_before_y = 0.0
+    monkeypatch.setattr(browser.time, "sleep", lambda _s: None)
+    fake_cdp.script = [None, [0, 2800, 1, 0, 300], [560, 2800, 1, 0, 300]]
+    instance.observe(screenshot=False)
+    expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
+    assert expressions[1:-1] == [browser.SCROLL_POLL] * 2
+
+    # The undecidable mirror (nested at its limit under
+    # overscroll-behavior: contain): nothing moves anywhere, so the
+    # wait pays the deadline -- indistinguishable from a late commit.
+    fake_cdp.calls.clear()
+    instance.after_input = {"kind": "scroll", "delta": 560}
+    instance._scroll_before_y = 0.0
+    monkeypatch.setattr(browser, "SCROLL_SETTLE_TIMEOUT", 0.12)
+    monkeypatch.setattr(browser.time, "monotonic", Mock(side_effect=[0.0, 0.0, 0.0] + [1.0] * 10))
+    fake_cdp.script = [None, [0, 2800, 1, 0, 0], [0, 2800, 1, 0, 0]]
+    instance.observe(screenshot=False)
+    expressions = [p["expression"] for p in fake_cdp.evaluate_params()]
+    assert expressions[1:-1] == [browser.SCROLL_POLL] * 2  # polled to the deadline, no early exit
+
+
 def test_act_scroll_records_the_pre_scroll_viewport_for_observe(monkeypatch):
     operation = Mock(return_value={"executed": "scroll_down"})
     monkeypatch.setattr(browser, "browser_operation", operation)
@@ -610,7 +654,18 @@ def act_request(action, text=None):
 def test_scroll_dispatches_a_mouse_wheel_and_nothing_else(fake_cdp):
     result = browser_operation(act_request({"kind": "scroll", "delta": 600, "id": "a3"}))
     assert result == {"executed": "a3"}
+    # The read-only nested-chain probe evaluate (SCROLL_CHAIN_PROBE)
+    # precedes the dispatch; the wheel itself is the only input.
     assert fake_cdp.calls == [
+        (
+            "Runtime.evaluate",
+            {
+                "session_id": "S1",
+                "_response_timeout": 30,
+                "expression": browser.SCROLL_CHAIN_PROBE,
+                "returnByValue": True,
+            },
+        ),
         (
             "Input.dispatchMouseEvent",
             {
@@ -622,8 +677,17 @@ def test_scroll_dispatches_a_mouse_wheel_and_nothing_else(fake_cdp):
                 "deltaX": 0,
                 "deltaY": 600,
             },
-        )
+        ),
     ]
+
+
+def test_scroll_still_dispatches_when_the_chain_probe_fails(fake_cdp):
+    # The probe only observes the dispatch; a page changing under it
+    # (StalePage from the evaluate) must not block the wheel.
+    fake_cdp.script = [{"__response__": {"exceptionDetails": {"text": "context destroyed"}}}]
+    result = browser_operation(act_request({"kind": "scroll", "delta": 600, "id": "a3"}))
+    assert result == {"executed": "a3"}
+    assert fake_cdp.methods() == ["Runtime.evaluate", "Input.dispatchMouseEvent"]
 
 
 def test_wait_performs_no_browser_calls(fake_cdp):

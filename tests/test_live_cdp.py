@@ -505,6 +505,75 @@ def test_live_boundary_scroll_exits_without_paying_the_deadline(dedicated_chrome
         browser.close()
 
 
+# --- nested scroller under the fixed wheel point (550, 650) --------------
+# The boundary exit's remaining case: Chromium latches a wheel to the
+# innermost scroller under the point. If that scroller moves, the wheel
+# was processed and the commit wait may end (SCROLL_CHAIN_PROBE); if it
+# sits at its own limit under overscroll-behavior: contain, nothing
+# moves anywhere and the wait deliberately pays the deadline, exactly
+# like a possibly-late root commit (docs/jev-ultrafast-port.md).
+
+NESTED_HTML = """<!doctype html><title>Nested scroller</title>
+<style>body{margin:0;font:18px sans-serif}.spacer{height:900px}
+#panel{position:fixed;left:350px;top:480px;width:420px;height:260px;
+overflow-y:auto;background:#eef;overscroll-behavior-y:OVERRIDE}
+#panel .inner{height:2000px}</style>
+<p>Top of a tall page</p><div class="spacer"></div><div class="spacer"></div>
+<div id="panel"><div class="inner">Panel top</div></div>"""
+
+
+def test_live_nested_swallow_exits_without_paying_the_deadline(dedicated_chrome):
+    from urllib.parse import quote
+
+    from account_vault.browser import CdpBrowser
+
+    browser = CdpBrowser("data:text/html," + quote(NESTED_HTML.replace("OVERRIDE", "auto")))
+    try:
+        page = browser.observe(screenshot=False)
+        down = next(a for a in page["actions"] if a.get("id") == "scroll_down")
+        browser.act(down, page)
+        started = time.perf_counter()
+        browser.observe(screenshot=False)
+        waited_ms = (time.perf_counter() - started) * 1000
+        assert waited_ms < 1500, f"nested-swallow observe took {waited_ms:.0f} ms"
+        # The panel consumed the wheel; the root never moved.
+        assert browser.evaluate("document.getElementById('panel').scrollTop") > 0
+        assert browser.evaluate("window.scrollY") == 0
+    finally:
+        browser.close()
+
+
+def test_live_nested_at_limit_under_contain_still_pays_the_deadline(dedicated_chrome, monkeypatch):
+    # Undecidable by construction: panel at its bottom + contain means
+    # no chaining to the root, and no offset anywhere ever moves -- the
+    # same observable as a root commit that is merely late. The wait
+    # must pay the (here shortened) deadline rather than guess.
+    from urllib.parse import quote
+
+    import account_vault.browser as browser_module
+    from account_vault.browser import CdpBrowser
+
+    monkeypatch.setattr(browser_module, "SCROLL_SETTLE_TIMEOUT", 1.0)
+    browser = CdpBrowser("data:text/html," + quote(NESTED_HTML.replace("OVERRIDE", "contain")))
+    try:
+        browser.observe(screenshot=False)
+        browser.evaluate("(()=>{const p=document.getElementById('panel');p.scrollTop=p.scrollHeight})()")
+        nested_max = browser.evaluate(
+            "(()=>{const p=document.getElementById('panel');return p.scrollHeight-p.clientHeight})()"
+        )
+        page = browser.observe(screenshot=False)  # re-observe: the pre-scroll staled the marker
+        down = next(a for a in page["actions"] if a.get("id") == "scroll_down")
+        browser.act(down, page)
+        started = time.perf_counter()
+        browser.observe(screenshot=False)
+        waited_ms = (time.perf_counter() - started) * 1000
+        assert waited_ms >= 1000, f"undecidable observe returned after {waited_ms:.0f} ms"
+        assert browser.evaluate("window.scrollY") == 0
+        assert browser.evaluate("document.getElementById('panel').scrollTop") == nested_max
+    finally:
+        browser.close()
+
+
 def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome):
     from urllib.parse import quote
 

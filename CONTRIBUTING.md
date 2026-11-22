@@ -32,7 +32,7 @@ notes, so nobody games a gate by accident:
   the code. Tests are outside mypy's scope (Mocks/monkeypatching by
   design) but fully inside ruff's.
 - **Skips are visible.** Skip reasons print by default (`-rs` is in
-  `addopts`). In the default run the only expected skips are the ten
+  `addopts`). In the default run the only expected skips are the fourteen
   live-CDP tests; the CI live job runs those for real. A new skip
   needs a reason a reader can act on.
 - **pytest runs strict** (`[tool.pytest]` in `pyproject.toml`):
