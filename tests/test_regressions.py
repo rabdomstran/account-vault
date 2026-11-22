@@ -515,7 +515,7 @@ def test_gate_hooks_must_be_callable():
 
 
 def test_model_call_budget_error_names_the_limit():
-    from account_vault.questions import MAX_DECISIONS
+    from account_vault.agent import MAX_DECISIONS
 
     p = page()
     runner = make_runner(p)
@@ -633,7 +633,7 @@ def test_run_ends_blocked_at_decision_budget_without_raising():
     # Command-level predict still raises (pinned above, #55), but run() —
     # the drive-to-completion API — must land on the terminal "blocked"
     # state instead of leaking the budget error as a traceback.
-    from account_vault.questions import MAX_DECISIONS
+    from account_vault.agent import MAX_DECISIONS
 
     p = page()
     runner = make_runner(p)

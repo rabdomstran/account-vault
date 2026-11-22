@@ -18,9 +18,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .agent import Agent
+from .agent import MAX_ACTIONS, Agent
 from .model import HeuristicDecider, MappingTextProvider
-from .questions import MAX_ACTIONS
 from .settings import load_settings
 
 ROOT = Path(__file__).parent

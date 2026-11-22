@@ -16,12 +16,29 @@ from pathlib import Path
 from typing import Any, Protocol, Self
 
 from .browser import CdpBrowser, CoveredTarget, StalePage
-from .model import MissingValueError, SystemOneDecider, action_space, field_context, field_text
-from .questions import CYCLE_WINDOW, MAX_ACTIONS, MAX_DECISIONS, MAX_NO_PROGRESS
+from .model import JsonDict, MissingValueError, SystemOneDecider, action_space, field_context, field_text
 from .settings import Settings, load_settings
 from .static_dom import StaticBrowser, is_static_source
 
-JsonDict = dict[str, Any]
+# Loop budgets. DEVIATION: upstream has a single MAX_STEPS=60 in its
+# questions module and an undocumented MAX_STEPS*2 model-call budget; the
+# error message gives no hint which budget was hit (upstream issue #55).
+# Here each budget is named for what it bounds: MAX_ACTIONS bounds
+# executed browser actions, MAX_DECISIONS bounds decide requests (a
+# decision may be discarded as stale without executing).
+MAX_ACTIONS = 60
+MAX_DECISIONS = 120
+# DEVIATION: episode-wide no-op budget, adopted from upstream PR #209
+# (MAX_STEPS // 5 there). Dropping a no-op control from the next offer
+# hands its turn to the runner-up, which is not guaranteed to help, so
+# scattered no-ops need their own bound; the three-consecutive stop alone
+# never fires when progress and no-ops alternate.
+MAX_NO_PROGRESS = MAX_ACTIONS // 5
+# How many recent cycle-eligible (non-wait/scroll) actions the #247
+# transition count looks back over. Wider than the comment thread's ~8
+# so a 3-step navigation cycle still registers when interleaved with
+# other substantive actions.
+CYCLE_WINDOW = 12
 
 
 class BrowserLike(Protocol):
