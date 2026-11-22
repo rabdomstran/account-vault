@@ -377,6 +377,19 @@ published figures substituted arithmetically). Full record:
   by this addendum; the original text is left as the decision-time
   record.
 
+### Dependency cleanup (2026-11-22, addendum)
+
+Decision 5's split named `browser-use`, `pydantic`, and
+`cryptography`/`argon2-cffi` as core and `cactus-compute` as the
+`perception` extra. None was ever imported — no vault or Mirage code
+exists, and `browser.py` drives `browser-harness` directly — so all
+four (and the `perception` extra) were dropped from `pyproject.toml`;
+they return with the code that needs them. The `local` extra is
+unchanged: `torch`/`transformers` back `local_decider.py`, and
+`torchvision`/`pillow` are imported by the d1 checkpoint's own
+`trust_remote_code` processors. The Decision 5 text above is left as
+the decision-time record.
+
 ## Revisit triggers
 
 - LFM license review concludes commercial use is not permitted → switch

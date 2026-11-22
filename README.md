@@ -139,11 +139,10 @@ tests/                         # ported contracts + upstream regression tests
 ```
 
 Core dependencies (see `pyproject.toml`): `httpx[http2]` (System-One wire
-client), `browser-use` + `browser-harness` (browser driving),
-`pydantic` + `python-dotenv` (schemas/settings), and `cryptography` +
-`argon2-cffi` (vault AEAD + KDF). The heavy torch stack for local d1-2B
-and `cactus-compute` for Mirage are optional extras, so the hosted-Jev
-path installs in seconds.
+client), `browser-harness` (CDP transport, driven directly by
+`browser.py`), and `python-dotenv` (settings). The heavy torch stack for
+local d1-2B is an optional extra, so the hosted-Jev path installs in
+seconds.
 
 ## Setup
 
@@ -165,9 +164,6 @@ uv pip install -e .
 
 # Optional: local d1-2B decide model (torch/transformers; heavy)
 uv pip install -e ".[local]"
-
-# Optional: Mirage screenshot-perception fallback
-uv pip install -e ".[perception]"
 
 # Development tools (pytest, ruff)
 uv sync --group dev

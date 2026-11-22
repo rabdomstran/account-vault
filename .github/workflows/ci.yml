@@ -42,8 +42,8 @@ jobs:
           cache-suffix: lint
 
       # --locked: fail if uv.lock is out of date with pyproject.toml.
-      # No --all-extras: the `local`/`perception` extras pull torch and
-      # cactus-compute, which neither the suite nor ruff needs.
+      # No --all-extras: the `local` extra pulls torch, which neither
+      # the suite nor ruff needs.
       - name: Install dependencies
         run: uv sync --locked --dev
 
