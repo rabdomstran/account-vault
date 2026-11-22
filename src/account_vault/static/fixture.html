@@ -440,7 +440,11 @@
       function detail(p) {
         location.hash = p.name.toLowerCase().replaceAll(" ", "-");
         document.title = `${p.name} · Forma`;
-        root.innerHTML = `<button type="button" class="back" id="back">← All stays</button><div class="detail">${art()}<div class="detail-copy"><div class="edition">${p.city.toUpperCase()} · ${p.category.toUpperCase()}</div><h1>${p.name}</h1><p>${p.description}</p><div class="price">€${p.price} <span>/ night · 2 guests</span></div><div class="success">${p.free ? "Free cancellation included" : "Non-refundable stay"}</div><p class="fixture-note">Your filters: ${category} · Free cancellation ${free ? "enabled" : "off"} · Destination ${query || "anywhere"}</p></div></div><footer>Local demo property. No reservation has been made.</footer>`;
+        root.innerHTML = `<button type="button" class="back" id="back">← All stays</button><div class="detail">${art()}<div class="detail-copy"><div class="edition">${p.city.toUpperCase()} · ${p.category.toUpperCase()}</div><h1>${p.name}</h1><p>${p.description}</p><div class="price">€${p.price} <span>/ night · 2 guests</span></div><div class="success">${p.free ? "Free cancellation included" : "Non-refundable stay"}</div><p class="fixture-note" id="filter-note"></p></div></div><footer>Local demo property. No reservation has been made.</footer>`;
+        // User-typed text (query/category) goes in via textContent,
+        // never innerHTML (CodeQL js/xss-through-dom, alert #2).
+        document.getElementById("filter-note").textContent =
+          `Your filters: ${category} · Free cancellation ${free ? "enabled" : "off"} · Destination ${query || "anywhere"}`;
         document.getElementById("back").onclick = () => {
           location.hash = "";
           travel();
