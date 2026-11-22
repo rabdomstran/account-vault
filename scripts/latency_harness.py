@@ -21,7 +21,10 @@ Stages (disjoint; they sum to the tick wall time, see aggregate_step):
 - decide    decider.choose() wall time. With the offline doubles this
   is local CPU only; the wire-shape micro-benchmark below isolates
   the request-building part of a real decide call so the missing
-  network/model time can be reasoned about separately.
+  network/model time can be reasoned about separately. With
+  `--decider local-d1` the stage is a real in-process d1-2B forward
+  pass (account_vault.local_decider), MPS-synchronized, so the
+  ADR-001 < 100 ms p50 gate is measured, not substituted.
 - act       browser.act() dispatch: the pre-input freshness guard,
   the in-page target resolver, and the Input.* calls.
 - text      the TYPE_TEXT helper call (MappingTextProvider offline).
@@ -31,14 +34,18 @@ Stages (disjoint; they sum to the tick wall time, see aggregate_step):
 No product code is modified. Timing wraps the injected browser /
 decider / text provider, taps the single account_vault.browser.cdp
 choke point (the same seam the fake-CDP tests monkeypatch), and wraps
-StaticBrowser._build on the instance. Deciders are the offline
-doubles throughout: what is measured is this port's machinery, not
-hosted-model quality or latency. Results land in
+StaticBrowser._build on the instance. By default the decider is the
+offline double: what is measured is this port's machinery, not
+hosted-model quality or latency. `--decider local-d1` swaps in the
+real d1-2B model (loaded once, shared across configs; each config
+keeps its own independent done_when checker and text provider, so
+task success is still never the model's say-so). Results land in
 docs/latency-measurement.json; docs/latency-results.md reads them.
 
     uv run python scripts/latency_harness.py --quick          # static smoke
     uv run python scripts/latency_harness.py                  # static, full N
     ACCOUNT_VAULT_LIVE=1 uv run python scripts/latency_harness.py --cdp
+    uv run python scripts/latency_harness.py --decider local-d1 --runs 3 --out docs/latency-measurement-d1.json
 """
 
 import argparse
@@ -306,7 +313,14 @@ class CdpTap:
 # --------------------------------------------------------------------------
 
 
-def drive_run(make_browser: Any, make_agent_parts: Any, url: str, goal: str, max_ticks: int = 30) -> dict[str, Any]:
+def drive_run(
+    make_browser: Any,
+    make_agent_parts: Any,
+    url: str,
+    goal: str,
+    max_ticks: int = 30,
+    done_when: Any = None,
+) -> dict[str, Any]:
     """One full loop run to done/blocked with per-tick stage records."""
     from account_vault.agent import Agent
 
@@ -324,10 +338,12 @@ def drive_run(make_browser: Any, make_agent_parts: Any, url: str, goal: str, max
             browser=browser,
             decider=TimedDecider(decider, recorder),
             text_provider=timed_text_provider(provider, recorder),
-            # The timing wrapper hides the double's own checker from
+            # The timing wrapper hides the decider's own checker from
             # Agent's pickup; hand it over explicitly (DONE is
-            # checker-owned now, see agent._code_done).
-            done_when=getattr(decider, "done_when", None),
+            # checker-owned now, see agent._code_done). A shared real
+            # decider (local-d1) carries no per-config checker, so the
+            # config's checker arrives via `done_when` instead.
+            done_when=done_when if done_when is not None else getattr(decider, "done_when", None),
         )
         setup_ms = (time.perf_counter_ns() - setup_started) / 1e6
         steps: list[dict[str, Any]] = []
@@ -646,11 +662,41 @@ def configs(include_cdp: bool) -> list[dict[str, Any]]:
     return base
 
 
+def with_shared_decider(config: dict[str, Any], shared: Any) -> dict[str, Any]:
+    """Swap a config's offline double for one shared (real) decider.
+
+    The config keeps its own text provider and -- crucially -- its
+    own independent `done_when` checker, lifted off the double it
+    replaces: with a real model driving, task success must still be
+    checker-owned, never the model's DONE. The probe parts are
+    built once here, not per run, because the provider is stateless
+    and the shared decider must not reload per run.
+    """
+    double, provider = config["make_parts"]()
+    wrapped = dict(config)
+    wrapped["make_parts"] = lambda: (shared, provider)
+    wrapped["done_when"] = getattr(double, "done_when", None)
+    return wrapped
+
+
 def run_config(config: dict[str, Any], runs: int, warmup: int) -> dict[str, Any]:
     for _ in range(warmup):
-        drive_run(config["make_browser"], config["make_parts"], config["url"], config["goal"])
+        drive_run(
+            config["make_browser"],
+            config["make_parts"],
+            config["url"],
+            config["goal"],
+            done_when=config.get("done_when"),
+        )
     records = [
-        drive_run(config["make_browser"], config["make_parts"], config["url"], config["goal"]) for _ in range(runs)
+        drive_run(
+            config["make_browser"],
+            config["make_parts"],
+            config["url"],
+            config["goal"],
+            done_when=config.get("done_when"),
+        )
+        for _ in range(runs)
     ]
     steps = [s for r in records for s in r["steps"]]
     # Terminal ticks (the DONE/BLOCKED decision) carry no act; shares
@@ -878,7 +924,35 @@ def micro_cdp_mechanisms(quick: bool = False) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
-def environment() -> dict[str, Any]:
+ADR001_DECIDE_GATE_MS = 100.0  # ADR-001 validation gate: local decide p50 < 100 ms on the M4
+
+
+def adr001_gate(results: dict[str, Any]) -> dict[str, Any]:
+    """The ADR-001 keep/drop latency half, computed over every acted step.
+
+    Decide p50 across all configs' acted steps (terminal ticks carry
+    a decide too but no act; the gate is about the per-step cost of
+    driving, so acted steps are the population latency-results.md
+    already headlines). `passed` is strict (< gate), matching the
+    ADR's wording.
+    """
+    decide_ms = [
+        step["stages_ms"]["decide"]
+        for config in results["configs"]
+        for run in config["runs"]
+        for step in run["steps"]
+        if step["kind"] not in {"terminal", "noact"}
+    ]
+    summary = summarize(decide_ms)
+    return {
+        "gate": "ADR-001: local decide p50 < 100 ms on Apple M4",
+        "gate_p50_ms": ADR001_DECIDE_GATE_MS,
+        "decide_ms_acted_steps": summary,
+        "passed": bool(decide_ms) and summary["p50"] < ADR001_DECIDE_GATE_MS,
+    }
+
+
+def environment(decider_label: str = "HeuristicDecider (offline double)") -> dict[str, Any]:
     def probe(*argv: str) -> str:
         try:
             return subprocess.run(argv, capture_output=True, text=True, timeout=10).stdout.strip()
@@ -896,7 +970,7 @@ def environment() -> dict[str, Any]:
         "python": sys.version.split()[0],
         "chrome": chrome,
         "git_sha": probe("git", "rev-parse", "--short", "HEAD"),
-        "decider": "HeuristicDecider (offline double)",
+        "decider": decider_label,
         "text_provider": "MappingTextProvider (offline double)",
         "screenshots": "off (loop default)",
     }
@@ -910,6 +984,15 @@ def print_report(results: dict[str, Any]) -> None:
     env = results["environment"]
     chrome = env["chrome"] or "no Chrome"
     print(f"latency harness — {env['date']}  {env['cpu']}  Python {env['python']}  {chrome}  @{env['git_sha']}")
+    print(f"decider: {env['decider']}")
+    gate = results.get("adr001_gate")
+    if gate:
+        decide = gate["decide_ms_acted_steps"]
+        verdict = "PASS" if gate["passed"] else "FAIL"
+        print(
+            f"ADR-001 gate (decide p50 < {gate['gate_p50_ms']:.0f} ms): {verdict} — "
+            f"decide {_fmt(decide)} ms over acted steps"
+        )
     for config in results["configs"]:
         s = config["summary"]
         print(f"\n== {config['name']}  ({config['page']})  statuses={s['statuses']}  acted steps={s['acted_steps']}")
@@ -957,12 +1040,42 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--micro-n", type=int, default=100, help="iterations per micro-benchmark")
     parser.add_argument("--quick", action="store_true", help="tiny N smoke run (3 runs, micro n=10)")
     parser.add_argument("--out", default=str(ROOT / "docs" / "latency-measurement.json"))
+    parser.add_argument(
+        "--decider",
+        choices=("heuristic", "local-d1"),
+        default="heuristic",
+        help="heuristic = offline double (machinery only); local-d1 = real in-process d1-2B (needs the 'local' extra)",
+    )
+    parser.add_argument("--d1-model", default="LiquidAI/d1-2B", help="HF model id for --decider local-d1")
+    parser.add_argument("--d1-device", default=None, help="pin device for local-d1 (default: cuda, then mps, then cpu)")
+    parser.add_argument("--d1-revision", default=None, help="pin HF revision for local-d1 reproducibility")
+    parser.add_argument("--d1-compile", action="store_true", help="torch.compile the local-d1 model (card method)")
     args = parser.parse_args(argv)
     if args.quick:
         args.runs, args.cdp_runs, args.micro_n, args.warmup = 3, 2, 10, 1
 
-    results: dict[str, Any] = {"environment": environment(), "configs": [], "micro": {}}
+    shared_decider = None
+    decider_label = "HeuristicDecider (offline double)"
+    if args.decider == "local-d1":
+        from account_vault.local_decider import LocalD1Decider
+
+        # Load once, eagerly: a 3.8 GB download/load must fail here,
+        # before any timing starts, not inside the first timed step.
+        print(f"loading {args.d1_model} (device={args.d1_device or 'auto'}, compile={args.d1_compile}) ...", flush=True)
+        load_started = time.perf_counter()
+        shared_decider = LocalD1Decider(
+            model_id=args.d1_model, device=args.d1_device, revision=args.d1_revision, compile_model=args.d1_compile
+        )
+        shared_decider.load()
+        load_ms = (time.perf_counter() - load_started) * 1000
+        mode = "compiled" if args.d1_compile else "eager"
+        decider_label = f"LocalD1Decider ({args.d1_model} on {shared_decider.device}, {mode}, load {load_ms:.0f} ms)"
+        print(f"loaded on {shared_decider.device} in {load_ms:.0f} ms", flush=True)
+
+    results: dict[str, Any] = {"environment": environment(decider_label), "configs": [], "micro": {}}
     for config in configs(include_cdp=args.cdp):
+        if shared_decider is not None:
+            config = with_shared_decider(config, shared_decider)
         runs = args.cdp_runs if config["backend"] == "cdp" else args.runs
         print(f"running {config['name']} x{runs} (+{args.warmup} warmup) ...", flush=True)
         results["configs"].append(run_config(config, runs, args.warmup))
@@ -973,6 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
         print("running CDP settle-mechanism micro-benchmarks ...", flush=True)
         results["micro"]["cdp_mechanisms"] = micro_cdp_mechanisms(quick=args.quick)
 
+    results["adr001_gate"] = adr001_gate(results)
     serializable = json.loads(json.dumps(results, default=str))
     Path(args.out).write_text(json.dumps(serializable, indent=1), encoding="utf-8")
     print_report(serializable)

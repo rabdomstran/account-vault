@@ -918,6 +918,18 @@ both tiers plus triage.** Anything quoting a larger dollar figure for
 the *decide* side is pricing engineering or GPU rental (excluded here
 rather than invented) — say which.
 
+> **Addendum (2026-11-22): step 3 ran.** The MPS smoke is recorded in
+> [d1-mps-smoke.md](d1-mps-smoke.md): on this M4 the card's 753 ms
+> (M5 Pro) became **12,023 ms p50 at 4,990 tokens** compiled, and
+> in-loop decide p50 is **8,056 ms** — the ADR-001 <100 ms gate
+> **failed**, worse than this section's "753 ms-class" prediction
+> by ~16× at matched size (torch-MPS eager/compiled path, 16 GB Air
+> swap/thermals; see smoke §1/§5). `system_one` output does reshape
+> cleanly into `validate_choice` (adapter + tests landed with the
+> smoke). Steps 1–2 and 4–5 above are unchanged; per this doc's own
+> sequencing, Tier R now prices the *successor* candidates, with
+> the harness's `--decider` wiring ready to measure each.
+
 ## 6. Claims to avoid
 
 Each of these is unsupported or falsified by the evidence above. Do not
