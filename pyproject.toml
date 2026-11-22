@@ -9,6 +9,10 @@ dependencies = [
     # Decide-step wire client (TypeSafe /v1/systemone shape; see ADR-001).
     "httpx[http2]>=0.28,<1",
     # CDP transport (jev-ultrafast's harness); browser.py drives it directly.
+    # Exact pin is deliberate: 0.1.x pre-1.0, no __all__/stability promise,
+    # and browser.py depends on the private-convention _response_timeout
+    # parameter of helpers.cdp. tests/test_harness_contract.py pins the
+    # used interface; a bump must pass it plus the live CDP suite.
     "browser-harness==0.1.13",
     # Settings (.env loading in settings.py).
     "python-dotenv>=1.0",
