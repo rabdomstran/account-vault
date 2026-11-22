@@ -1,8 +1,9 @@
 """Verify every non-Python package file ships in the built distributions.
 
-The inspector and static browser load files from the package directory
-at runtime (static/, snapshot.js via Path(__file__).parent), so a wheel
-missing them installs fine and breaks later. Expected files are
+The inspector, static browser, and CDP backend load files from the
+package directory at runtime (static/ plus snapshot.js, act.js and
+settle.js via Path(__file__).parent), so a wheel missing them breaks at
+import or first use. Expected files are
 derived from the source tree, so new assets are covered automatically.
 
 Used by the CI `build` job and the release workflow. Run after
