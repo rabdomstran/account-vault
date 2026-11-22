@@ -402,6 +402,84 @@ full deadline, deliberately: a wheel swallowed by a nested
 scroller while the root viewport could still move (unprovable
 from root offsets), and any commit later than 3 s.
 
+### Nested-swallow detection (follow-up, same day)
+
+The remaining case above was researched against the
+Playwright, Puppeteer and Stagehand trackers plus Chromium's
+own before anything was written:
+
+- **Playwright** — `mouse.wheel` is the same fire-and-forget
+  CDP dispatch used here (`crInput.ts: wheel()` sends
+  `Input.dispatchMouseEvent` and returns); no commit wait, no
+  swallow detection. Its only nested-scroller issue of note
+  (#41421) is click auto-scroll (`scrollIntoViewIfNeeded`),
+  a different mechanism.
+- **Puppeteer** — identical shape; wheel tracker items cover
+  adding `mouseWheel` support (#4119) and a `wheelDelta` value
+  bug (#7265), nothing about consumption or completion.
+- **Stagehand** — issue #276 ("Múltiple scrollable elements")
+  is the inverse problem: pages whose main scroller is an
+  inner div are invisible to it because it assumes
+  `window.scrollTo`. The thread's workaround is Playwright's
+  `page.mouse.wheel` + a DOM-settle wait; nobody there attempts
+  to prove which scroller consumed a wheel.
+- **Chromium** — a wheel is hit-tested to the innermost
+  scroller under the point and *latched* to it; the delta
+  chains to ancestors only when that scroller reaches its
+  limit and `overscroll-behavior` permits bubbling (crbug
+  41378182, "Respect overscroll-behavior when determining
+  scroll bubbling"; 41371072 extends it to all scroll
+  containers). No CDP or DOM surface reports which scroller
+  consumed a given wheel — the dispatch ACK still precedes
+  DOM handling.
+
+**Conclusion: nobody has a general signal; one sub-case is
+provable, the mirror is not.** If a scroller in the ancestor
+chain under the fixed wheel point (550, 650) actually moves in
+the scrolled direction, the wheel *was* processed — the same
+strength of evidence root movement already gives. If that
+scroller is already at its own limit under
+`overscroll-behavior: contain`/`none` (or a non-passive
+`wheel` listener calls `preventDefault`, or the scroller lives
+in an iframe/shadow tree invisible from the top document),
+nothing moves anywhere, ever — observationally identical to a
+root commit that is merely late, which is precisely the state
+the 3 s wait exists to protect (#212/#209). Any "proof" there
+would have to re-derive Chromium's compositor latch decision
+from DOM state (`elementFromPoint` ancestry + per-scroller
+limits + computed overscroll-behavior), an approximation a
+`preventDefault` handler or a smooth-scroll animation
+silently falsifies; a false positive reintroduces the
+mid-page scroll drop the wait was built to prevent. So the
+undecidable remainder keeps the deadline, by design.
+
+Implemented (`SCROLL_CHAIN_PROBE` in browser.py): immediately
+before dispatch, a read-only evaluate records the scrollable
+ancestor chain under the wheel point with its offsets;
+`SCROLL_POLL` now also returns the chain's largest down/up
+movement since, and movement in the scrolled direction ends
+the wait. The snapshot still records the root as unmoved, so
+#209's no-op drop proceeds exactly as after a full wait —
+only the 3 s is saved. Pinned at the fake-CDP seam (chain
+hit, direction guard, silent-chain fall-through, probe
+failure still dispatching) and live (swallow exits fast with
+the root unmoved; at-limit-under-`contain` pays a shortened
+deadline in full). Counterfactual: with browser.py reverted,
+the live swallow test fails at the deadline (≈4 s wall).
+
+Same-setup harness, mechanisms only (nested scenario added to
+`micro_cdp_mechanisms`; boundary row re-measured as a control):
+
+| Metric | Before | After |
+|---|---:|---:|
+| nested-swallow observe wall p50 (n=5) | ≈3,076 ms (deadline) | **35 ms** |
+| boundary scroll observe wall p50 (n=5) | 108 ms | 108 ms |
+| moving scroll observe wall p50 (n=24) | — | 36 ms |
+
+What still pays the full deadline, deliberately: the
+undecidable mirror above, pinch-zoom, growing pages, and any
+commit later than 3 s.
+
 ## Limits — what this does not show
 
 - **No real decide/text model was run for the tables above.** All

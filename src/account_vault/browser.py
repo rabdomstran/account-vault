@@ -191,7 +191,49 @@ SCROLL_SETTLE_POLL = 0.05
 # viewport) — keeps the full deadline exactly as before.
 SCROLL_POLL = (
     "[window.scrollY, document.documentElement.scrollHeight - window.innerHeight, "
-    "window.visualViewport ? window.visualViewport.scale : 1]"
+    "window.visualViewport ? window.visualViewport.scale : 1, "
+    "...(() => { const c = window.__jevWheelChain; if (!c) return [0, 0]; "
+    "let d = 0, u = 0; c.els.forEach((e, i) => { if (e.isConnected) { "
+    "const m = e.scrollTop - c.tops[i]; if (m > d) d = m; if (-m > u) u = -m; } }); "
+    "return [d, u]; })()]"
+)
+
+# DEVIATION: nested-scroller swallow detection (the boundary exit's
+# remaining case, docs/jev-ultrafast-port.md). Chromium hit-tests a
+# wheel to the innermost scroller under the point and latches the
+# gesture to it; the delta chains to ancestors only once that
+# scroller is at its limit and overscroll-behavior allows bubbling
+# (crbug 41378182). No surveyed automation project waits on any of
+# this -- Playwright's and Puppeteer's mouse.wheel are the same
+# fire-and-forget CDP dispatch used below, and Stagehand (issue
+# #276) cannot even offer nested scrollers -- and Chromium exposes
+# no "wheel consumed by X" signal: the dispatch ACK precedes DOM
+# handling, exactly as for the root. What is provable is narrower:
+# if a scroller under the fixed wheel point moves in the scrolled
+# direction, the wheel was processed (by it), so the commit wait
+# can end just as root movement ends it. The probe below records
+# the scrollable ancestor chain under the point (and its offsets)
+# immediately before dispatch; SCROLL_POLL's last two values are
+# the chain's largest down/up movement since. The mirror case --
+# a nested scroller already at its own limit with
+# overscroll-behavior: contain/none, a non-passive wheel
+# preventDefault, or a scroller inside an iframe/shadow tree the
+# probe cannot see -- moves nothing anywhere and is
+# indistinguishable from a merely late root commit, so it keeps
+# the full deadline deliberately: a false early exit there would
+# reintroduce the #212/#209 mid-page drop the wait exists to
+# prevent.
+WHEEL_X = 550
+WHEEL_Y = 650
+SCROLL_CHAIN_PROBE = (
+    f"(() => {{ try {{ const chain = []; let n = document.elementFromPoint({WHEEL_X}, {WHEEL_Y}); "
+    "while (n && n !== document.documentElement && n !== document.body) { "
+    "if (n instanceof Element) { const s = getComputedStyle(n); "
+    "if ((s.overflowY === 'auto' || s.overflowY === 'scroll' || s.overflowY === 'overlay') "
+    "&& n.scrollHeight > n.clientHeight + 1) chain.push(n); } "
+    "n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null; } "
+    "window.__jevWheelChain = {els: chain, tops: chain.map((e) => e.scrollTop)}; "
+    "return chain.length; } catch { window.__jevWheelChain = null; return 0; } })()"
 )
 
 
@@ -332,11 +374,14 @@ class CdpBrowser:
     def _await_scroll_commit(self, before_y: float, delta: float) -> None:
         """Poll until a dispatched wheel scroll commits (see the
         SCROLL_SETTLE_TIMEOUT deviation). Movement in the scrolled
-        direction is the exit; a still viewport at the deadline is a
-        genuine no-op and the caller observes it as one. Two
-        consecutive polls proving the viewport is already at its
-        directional limit also exit (see SCROLL_POLL): no commit
-        can follow, so the remaining deadline buys no information."""
+        direction is the exit -- the root viewport's, or the nested
+        chain under the wheel point (see SCROLL_CHAIN_PROBE): either
+        proves the wheel was processed. A still viewport at the
+        deadline is a genuine no-op and the caller observes it as
+        one. Two consecutive polls proving the viewport is already
+        at its directional limit also exit (see SCROLL_POLL): no
+        commit can follow, so the remaining deadline buys no
+        information."""
         if not delta:
             return
         deadline = time.monotonic() + SCROLL_SETTLE_TIMEOUT
@@ -353,12 +398,23 @@ class CdpBrowser:
                 if isinstance(reading, (list, tuple))
                 else []
             )
-            values = [v if isinstance(v, (int, float)) and not isinstance(v, bool) else None for v in numbers[:3]]
+            values = [v if isinstance(v, (int, float)) and not isinstance(v, bool) else None for v in numbers[:5]]
             y = values[0] if values else None
             max_y = values[1] if len(values) > 1 else None
             scale = values[2] if len(values) > 2 else None
+            chain_down = values[3] if len(values) > 3 else None
+            chain_up = values[4] if len(values) > 4 else None
             if y is not None:
                 if (delta > 0 and y > before_y) or (delta < 0 and y < before_y):
+                    return
+                # A nested scroller under the wheel point moved in the
+                # scrolled direction: it latched and consumed the
+                # wheel, so the root will not follow from this
+                # dispatch and the deadline buys nothing. The
+                # snapshot still records the root as unmoved, so the
+                # no-op machinery proceeds exactly as after a full
+                # wait -- only the 3 s is saved.
+                if (delta > 0 and chain_down) or (delta < 0 and chain_up):
                     return
                 at_limit = (
                     max_y is not None and scale == 1 and ((delta > 0 and y >= max_y - 2) or (delta < 0 and y <= 0))
@@ -449,7 +505,16 @@ def browser_operation(request: dict[str, Any]) -> dict[str, Any]:
         action = request["action"]
         kind = action["kind"]
         if kind == "scroll":
-            call("Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=action["delta"])
+            # Record the scrollable chain under the wheel point so the
+            # commit wait can tell a nested swallow from a late root
+            # commit (see SCROLL_CHAIN_PROBE). Best-effort: the probe
+            # is read-only and a page changing under it must never
+            # block the dispatch it only observes.
+            try:
+                evaluate(SCROLL_CHAIN_PROBE)
+            except (RuntimeError, StalePage):
+                pass
+            call("Input.dispatchMouseEvent", type="mouseWheel", x=WHEEL_X, y=WHEEL_Y, deltaX=0, deltaY=action["delta"])
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")

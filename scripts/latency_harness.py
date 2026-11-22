@@ -126,6 +126,8 @@ def classify_cdp(method: str, params: dict[str, Any], *, read_state: str, marker
             return "snapshot"  # freshness check = full snapshot re-run
         if expression == "window.scrollY" or expression.startswith("[window.scrollY,"):
             return "settle"  # scroll-commit poll inside observe()
+        if "__jevWheelChain" in expression:
+            return "act_resolve"  # nested-chain probe before wheel dispatch
         if expression.startswith("(action => new Promise"):
             return "settle"  # post-input 2-rAF wait inside observe()
         if "c.guard(" in expression or "c.pageKey()" in expression:
@@ -479,6 +481,14 @@ SCROLL_HTML = """<!doctype html><title>Deep page</title>
 <button id="deep" onclick="window.__clicks.push('deep');
 document.getElementById('status').textContent='Deep done'">Deep target</button>
 <p id="status">pending</p><script>window.__clicks=[]</script>"""
+
+NESTED_HTML = """<!doctype html><title>Nested scroller</title>
+<style>body{margin:0;font:18px sans-serif}.spacer{height:900px}
+#panel{position:fixed;left:350px;top:480px;width:420px;height:260px;
+overflow-y:auto;background:#eef}
+#panel .inner{height:2000px}</style>
+<p>Top of a tall page</p><div class="spacer"></div><div class="spacer"></div>
+<div id="panel"><div class="inner">Panel top</div></div>"""
 
 WAIT_HTML = """<!doctype html><title>Async reveal</title>
 <p id="status">loading</p>
@@ -885,6 +895,31 @@ def micro_cdp_mechanisms(quick: bool = False) -> dict[str, Any]:
         finally:
             browser.close()
 
+        # Nested swallow: a fixed panel under the wheel point (550,
+        # 650) latches every wheel while the root could still move.
+        # The chain probe proves the wheel was processed, so observe
+        # must not pay the 3 s deadline (reset the panel each round
+        # so every wheel has somewhere to go).
+        browser = _cdp_browser(_data_url(NESTED_HTML))
+        timed = TimedBrowser(browser, recorder)
+        try:
+            recorder.bucket = "mech-nested-setup"
+            page = timed.observe(screenshot=False)
+            nested_observe = []
+            down = next(a for a in page["actions"] if a.get("id") == "scroll_down")
+            for i in range(boundary_n):
+                recorder.bucket = f"mech-nested-{i}-reset"
+                timed.evaluate("document.getElementById('panel').scrollTop = 0")
+                page = timed.observe(screenshot=False)  # the reset stales the marker
+                bucket = f"mech-nested-{i}"
+                recorder.bucket = bucket
+                timed.act(down, page)
+                page = timed.observe(screenshot=False)
+                nested_observe.append(_bucket_ms(recorder, bucket, "wall_observe"))
+            out["scroll_nested"] = {"observe_wall_ms": summarize(nested_observe)}
+        finally:
+            browser.close()
+
         combo: dict[str, Any] = {}
         for delay in (0, 120, 300):
             browser = _cdp_browser(_data_url(combobox_html(delay)))
@@ -1017,6 +1052,8 @@ def print_report(results: dict[str, Any]) -> None:
             f"observe {_fmt(mech['scroll']['observe_wall_ms'])} ms"
         )
         print(f"   scroll at boundary: observe {_fmt(mech['scroll_boundary']['observe_wall_ms'])} ms")
+        if "scroll_nested" in mech:
+            print(f"   scroll into nested panel: observe {_fmt(mech['scroll_nested']['observe_wall_ms'])} ms")
         print(
             f"   wait: act {_fmt(mech['wait']['act_ms'])} ms | settle after {_fmt(mech['wait']['settle_after_ms'])} ms"
         )

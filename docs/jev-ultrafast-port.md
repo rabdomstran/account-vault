@@ -206,6 +206,31 @@ could still move — unprovable from root offsets, kept
 deliberately. Numbers and method in
 [latency-results.md](latency-results.md).
 
+**Nested follow-up (2026-11-22): the movable-nested half is
+now detected; the at-limit half is undecidable and stays.**
+A tracker pass (Playwright, Puppeteer, Stagehand, Chromium —
+detail in [latency-results.md](latency-results.md)) found no
+consumption signal anywhere: every wheel is the same
+fire-and-forget dispatch, Stagehand's nested issue (#276) is
+the inverse problem, and Chromium latches a wheel to the
+innermost scroller under the point, chaining only at its
+limit when `overscroll-behavior` allows (crbug 41378182),
+with no surface reporting which scroller consumed a wheel.
+Provable sub-case: if a scroller in the chain under the fixed
+wheel point moves in the scrolled direction, the wheel was
+processed — `SCROLL_CHAIN_PROBE` records that chain and its
+offsets just before dispatch, and `SCROLL_POLL`'s chain
+movement now ends the wait (root still recorded unmoved, so
+#209 proceeds identically). Harness: nested-swallow observe
+p50 **≈3,076 → 35 ms** (n=5); boundary re-measured 108 ms as
+a control. Genuinely undecidable, kept on the full deadline:
+a nested scroller at its own limit under `contain`/`none`, a
+non-passive `wheel` `preventDefault`, or a scroller inside an
+iframe/shadow tree — nothing moves anywhere, identical to a
+late root commit, and guessing there reopens the #212/#209
+mid-page drop. What we do instead is wait, exactly as before;
+the snapshot then records the no-op and the offer drops.
+
 ## Verification (2026-11-21)
 
 ```bash
