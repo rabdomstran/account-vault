@@ -149,6 +149,33 @@ def _verify_daemon_kind(opt_in: bool) -> str | None:
 # the act resolver (act.js). Its JS list is generated from this set.
 NATIVE_FILL_TYPES = frozenset({"date", "datetime-local", "time", "month", "week", "color", "range"})
 
+# Perception tables shared verbatim by snapshot.js (live) and static_dom
+# (offline twin). They used to be spelled once per implementation; the
+# JS copies are now generated from these constants at load (tokens in
+# snapshot.js, like act.js's __NATIVE_FILL_TYPES__), and static_dom
+# imports them, so the two engines cannot drift on what a role or an
+# excluded input type is. See docs/static-live-parity.md for what still
+# (necessarily) differs between the backends.
+ELEMENT_ROLES = (
+    "button",
+    "link",
+    "checkbox",
+    "radio",
+    "switch",
+    "tab",
+    "menuitem",
+    "menuitemradio",
+    "option",
+    "gridcell",
+    "combobox",
+    "textbox",
+    "searchbox",
+    "spinbutton",
+    "slider",
+)
+SAFE_EXCLUDE = frozenset({"password", "file", "hidden"})
+EDITABLE_ROLES = ("textbox", "searchbox", "spinbutton", "slider")
+
 # DEVIATION: explicit CDP IPC deadlines (upstream issue #14, PRs #97/#19,
 # and branch codex/bu-bench-eval-v2 commits a2676ee/6cf62ca, diffed
 # before adopting). browser-harness defaults every call to 5s, which
@@ -199,23 +226,31 @@ def _deadline(method: str) -> int:
     return SCREENSHOT_RESPONSE_TIMEOUT if method == "Page.captureScreenshot" else CDP_RESPONSE_TIMEOUT
 
 
-def _native_fill_js() -> str:
-    return "[" + ",".join(f"'{t}'" for t in sorted(NATIVE_FILL_TYPES)) + "]"
+def _js_list(values: Any) -> str:
+    return "[" + ",".join(f"'{v}'" for v in values) + "]"
 
 
 # In-page programs live beside snapshot.js as .js files, loaded once:
 # READ_STATE observes, AFTER_INPUT_SETTLE waits out the post-input settle,
 # ACT_RESOLVER re-resolves a target's geometry/occlusion before input.
-# act.js carries a __NATIVE_FILL_TYPES__ token so the JS list cannot drift
-# from the Python frozenset above.
+# Shared perception tables ride into the JS as __TOKENS__ replaced here
+# from the Python constants above, so no JS list can drift from them.
 _PACKAGE_DIR = Path(__file__).parent
+_READ_STATE_TOKENS = {
+    "__ELEMENT_ROLES__": _js_list(ELEMENT_ROLES),
+    "__SAFE_EXCLUDE__": _js_list(sorted(SAFE_EXCLUDE)),
+    "__EDITABLE_ROLES__": _js_list(EDITABLE_ROLES),
+}
 READ_STATE = (_PACKAGE_DIR / "snapshot.js").read_text(encoding="utf-8")
+for _token, _list in _READ_STATE_TOKENS.items():
+    assert READ_STATE.count(_token) == 1, _token  # each table spelled once in the JS
+    READ_STATE = READ_STATE.replace(_token, _list)
 AFTER_INPUT_SETTLE = (_PACKAGE_DIR / "settle.js").read_text(encoding="utf-8").rstrip("\n")
 ACT_RESOLVER = (
     (_PACKAGE_DIR / "act.js")
     .read_text(encoding="utf-8")
     .rstrip("\n")
-    .replace("__NATIVE_FILL_TYPES__", _native_fill_js())
+    .replace("__NATIVE_FILL_TYPES__", _js_list(sorted(NATIVE_FILL_TYPES)))
 )
 assert "__NATIVE_FILL_TYPES__" not in ACT_RESOLVER  # token replaced above
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"

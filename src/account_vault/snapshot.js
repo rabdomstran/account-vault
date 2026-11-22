@@ -2,6 +2,9 @@
 // indexed action table. Ported from jev_ultrafast/snapshot.js (MIT,
 // browser-use/jev-ultrafast). Lines marked DEVIATION fix known upstream
 // coverage bugs; everything else is unchanged so behaviour stays comparable.
+// __ELEMENT_ROLES__ / __SAFE_EXCLUDE__ / __EDITABLE_ROLES__ are replaced at
+// load from browser.py (shared with static_dom.py; see
+// docs/static-live-parity.md).
 (() => {
   if (!document.body) return null;
   const cache = window.__jevFast ||= {ids:new WeakMap(), nodes:new Map(), next:1, covered:new Set()};
@@ -17,7 +20,7 @@
   }
   // The act guard's own hit test, shared so offer and execution agree.
   cache.hits=(e,x,y)=>e.contains(document.elementFromPoint(x,y));
-  const safe = e => !['password','file','hidden'].includes(e.type);
+  const safe = e => !__SAFE_EXCLUDE__.includes(e.type);
   const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
   // A control the main pass drops for having no hittable box of its own
@@ -54,8 +57,7 @@
   // DEVIATION: 'slider' closes the list (upstream's ends at 'spinbutton')
   // so role="slider" widgets and range inputs (#215/#227, in role below)
   // reach the table; slider is fillable in the editable test below.
-  const roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio',
-    'option','gridcell','combobox','textbox','searchbox','spinbutton','slider'];
+  const roles=__ELEMENT_ROLES__;
   // Two scope texts, close but deliberately not the same: the guard's
   // (upstream's selectors, part of freshness semantics) vs the scope copy
   // carried on each action for field_context, which adds fieldset so
@@ -157,7 +159,7 @@
           current_value:[...e.selectedOptions].map(s=>s.label).join(', '),label:base.label+' → '+o.label}); });
     } else {
       const editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
-        (['textbox','searchbox','spinbutton','slider'].includes(rname) ||
+        (__EDITABLE_ROLES__.includes(rname) ||
           (rname==='combobox' && ['INPUT','TEXTAREA'].includes(e.tagName)));
       const value='value' in e ? String(e.value) :
         e.isContentEditable || rname==='combobox' ? e.innerText.trim() : '';

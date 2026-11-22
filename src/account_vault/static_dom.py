@@ -28,27 +28,12 @@ from pathlib import Path
 from typing import Any, overload
 from urllib.parse import unquote, urlparse
 
-from .browser import NATIVE_FILL_TYPES, StalePage, fingerprint
+from .browser import EDITABLE_ROLES, ELEMENT_ROLES, NATIVE_FILL_TYPES, SAFE_EXCLUDE, StalePage, fingerprint
 
 VOID = {"input", "br", "img", "hr", "meta", "link", "area", "base", "col", "embed", "source", "track", "wbr"}
-ROLES = {
-    "button",
-    "link",
-    "checkbox",
-    "radio",
-    "switch",
-    "tab",
-    "menuitem",
-    "menuitemradio",
-    "option",
-    "gridcell",
-    "combobox",
-    "textbox",
-    "searchbox",
-    "spinbutton",
-    "slider",
-}
-SAFE_EXCLUDE = {"password", "file", "hidden"}
+# Shared with snapshot.js via browser.py (generated into the JS at load);
+# see docs/static-live-parity.md.
+ROLES = frozenset(ELEMENT_ROLES)
 
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 _MONTH_RE = re.compile(r"(\d{4})-(\d{2})\Z")
@@ -570,10 +555,7 @@ class StaticBrowser:
                 editable = (
                     "readonly" not in element.attrs
                     and element.get("aria-readonly") != "true"
-                    and (
-                        role in {"textbox", "searchbox", "spinbutton", "slider"}
-                        or (role == "combobox" and element.tag in {"input", "textarea"})
-                    )
+                    and (role in EDITABLE_ROLES or (role == "combobox" and element.tag in {"input", "textarea"}))
                 )
                 value = self._value(element)
                 actions.append({**base, "kind": "fill" if editable else "click", "value": value})
