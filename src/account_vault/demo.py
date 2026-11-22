@@ -12,6 +12,7 @@ import atexit
 import json
 import os
 import secrets
+import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -196,10 +197,24 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class InspectorServer(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # DEVIATION: HTTPServer.server_bind() calls socket.getfqdn()
+        # on the bind host. Measured on the macOS CI runner that
+        # lookup took 35.0s (a stalled resolver walk for "localhost")
+        # while every socket operation took <10ms — it dominated
+        # both inspector startup and the macOS CI test time. This
+        # server only ever binds 127.0.0.1, so name it literally.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
 def make_server(port: int | None = None) -> ThreadingHTTPServer:
     """Bind the inspector (ephemeral ports allowed, for tests)."""
     global PORT
-    server = ThreadingHTTPServer(("127.0.0.1", PORT if port is None else port), Handler)
+    server = InspectorServer(("127.0.0.1", PORT if port is None else port), Handler)
     PORT = server.server_address[1]
     return server
 
