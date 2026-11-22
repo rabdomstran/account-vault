@@ -119,7 +119,9 @@ def test_drive_run_static_hotel_reaches_done_with_timed_steps():
         stages = step["stages_ms"]
         assert stages["step"] > 0
         assert stages["settle"] == 0.0  # no browser offline, by construction
-        assert step["snapshot_evals"] >= 2  # predict-fresh + post-act observe, minimum
+        # One build per acted step (the post-act observe); freshness is
+        # served from that build's cache (cheap-fresh DEVIATION).
+        assert step["snapshot_evals"] == 1
         total = sum(stages[s] for s in harness.STAGES)
         assert abs(total - stages["step"]) < 1e-6
         assert stages["other"] > -0.05  # residual stays sane (timer granularity)

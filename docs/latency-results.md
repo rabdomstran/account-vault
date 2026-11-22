@@ -267,7 +267,9 @@ Second target if local latency ever matters at this scale: the
 that does not rebuild the element table would save 7–10% of CDP
 step time and ~60% of static step time; upstream has the same
 shape, so this would be a deliberate DEVIATION needing its own
-freshness argument, not a silent optimization).
+freshness argument, not a silent optimization). **Attempted the
+same day — see the Follow-up: the static half landed, the CDP
+half measured flat and was reverted.**
 
 ## Limits — what this does not show
 
@@ -291,3 +293,58 @@ freshness argument, not a silent optimization).
   enough for stable p50/p95 on these tight distributions
   (settle p95−p50 ≈ 2–3 ms) but p99/max are indicative only.
   Static: 30 runs (180–240 steps), micro n=100.
+
+## Follow-up: cheap `fresh()` — static kept, CDP probe reverted (2026-11-22)
+
+Both halves of the candidate DEVIATION above were built and
+measured with this same harness, back to back on the same machine
+(before = unmodified `main`, re-run that day; it reproduces the
+committed table above within noise):
+
+- **Static:** `_build()` leaves its (marker, page_key, guards)
+  behind; `act()`/`_load()` — the only mutation paths — clear
+  them; `fresh()` answers from the cache and rebuilds only when
+  it is empty. `observe()` still rebuilds always.
+- **CDP (interim, reverted):** `snapshot.js` stored its marker +
+  field-state JSON and installed a `MutationObserver` dirty flag;
+  `fresh()` first ran a cheap probe (stored marker returned only
+  if DOM/scroll/viewport/title/href/fields all still matched)
+  and fell back to the full MARKER recompute on any doubt.
+  Verdicts were pinned identical at the fake-CDP seam and live
+  (DOM mutation, property-only field write, scroll) before
+  measuring.
+
+Step time per acted step, before → interim (both halves) → final
+shipped (static half only; CDP probe reverted). Final raw data:
+[latency-measurement-cheap-fresh.json](latency-measurement-cheap-fresh.json).
+
+| Config | Before p50 / mean | Interim p50 / mean | Final p50 / mean |
+|---|---:|---:|---:|
+| static-hotel | 1.19 / 1.10 | 0.35 / 0.35 | 0.35 / 0.36 |
+| static-catalog | 2.62 / 2.89 | 0.93 / 0.95 | 0.93 / 0.96 |
+| cdp-catalog | 33.40 / 34.88 | 33.65 / 35.97 | 33.40 / 34.70 |
+| cdp-fixture | 33.41 / 35.25 | 33.73 / 35.69 | 33.35 / 34.60 |
+
+Reading: on the static backend the prediction held and then
+some — step p50 fell **65–71%** (snapshot builds/step 3.0–3.5 →
+1.0; micro `fresh()` 0.29/0.82 ms → ~0.001–0.002 ms), because a
+cache hit costs no rebuild at all. On CDP the mechanism also
+worked — snapshot executions/step 3.0 → 1.0, snapshot-stage p50
+6.51 → 2.62 ms (catalog), micro `fresh()` 1.24 → 0.47 ms — yet
+**step p50 did not move** (+0.7%/+1.0%): each probe is still a
+`Runtime.evaluate` IPC round-trip returning the full marker by
+value (~0.5 ms, 2–3 per step, landing in `other`), and settle
+drifted ≈1 ms against the saving. Freshness got cheaper; the
+step did not get faster. Per the standing rule for this change
+(no p50 movement → revert), the CDP probe was reverted in full:
+upstream's freshness shape is unchanged there, and the 3–4×
+snapshot executions per CDP step documented above remain the
+current behaviour. The static cache shipped (DEVIATION comment
+in `static_dom.py`, pinned in `tests/test_static.py`).
+
+What would actually move the CDP step is not a cheaper probe but
+fewer of them — e.g. skipping predict's freshness check when the
+page was just observed in the same tick — which changes loop
+semantics upstream chose deliberately, and wants its own
+argument (and ideally a real-site page where the saving is not
+swamped by a 26 ms settle floor). Not attempted here.

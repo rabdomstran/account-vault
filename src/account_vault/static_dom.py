@@ -222,6 +222,8 @@ class StaticBrowser:
         return browser
 
     def _load(self, markup: str) -> None:
+        # (marker, page_key, guards) of the last _build(); see fresh().
+        self._fresh_cache: tuple[Any, Any, Any] | None = None
         parser = _Parser()
         parser.feed(markup)
         self.root = parser.root
@@ -724,6 +726,9 @@ class StaticBrowser:
             "omitted_actions": omitted,
         }
         page["fingerprint"] = fingerprint(page)
+        # Freshness cache for fresh() below: the marker/guards this
+        # build just computed, valid until act() or _load() clears it.
+        self._fresh_cache = (marker, page_key, guards)
         return page
 
     # -- browser contract ---------------------------------------------------
@@ -735,14 +740,25 @@ class StaticBrowser:
         return self._build()
 
     def fresh(self, page: dict[str, Any], action: dict[str, Any] | None = None) -> bool:
-        current = self._build()
+        # DEVIATION (docs/latency-results.md): this used to rebuild the
+        # whole element table on every call (3-4 builds per loop step,
+        # 93-96% of static step time). The static DOM mutates only
+        # through act() and navigation (_load), both of which clear
+        # the cache _build() leaves behind, so an unmutated page can
+        # answer from that build. observe() still rebuilds always.
+        current = self._fresh_cache
+        if current is None:
+            self._build()
+            current = self._fresh_cache
+        assert current is not None  # _build always populates it
+        marker, page_key, guards = current
         if action is not None and action.get("kind") in {"click", "select"}:
             node = action.get("node")
             if type(node) is not int:
                 return False
-            now = [current["page_key"], current["guards"].get(str(node))]
+            now = [page_key, guards.get(str(node))]
             return bool(now == [page["page_key"], page["guards"].get(str(node))])
-        return bool(current["marker"] == page["marker"])
+        return bool(marker == page["marker"])
 
     def act(self, action: dict[str, Any], page: dict[str, Any], text: str | None = None) -> dict[str, Any]:
         if not self.fresh(page, action):
@@ -754,6 +770,10 @@ class StaticBrowser:
             return {"executed": action["id"]}
         node = action.get("node")
         element = self.by_node.get(node) if type(node) is int else None
+        # From here the branches below may mutate the DOM (or raise
+        # trying): drop the freshness cache first so no later fresh()
+        # can answer from the pre-act build.
+        self._fresh_cache = None
         if element is None or not self._visible(element) or self._disabled(element):
             if kind == "select":
                 raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
