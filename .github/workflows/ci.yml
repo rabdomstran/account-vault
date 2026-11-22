@@ -116,8 +116,8 @@ jobs:
       # Coverage floor: suite measures 92% (browser.py 97%, __main__
       # 100%; remaining gaps are mostly demo.py and model.py edge
       # paths). 89 is the regression floor, not an aspiration.
-      # --durations: one macOS socket test is ~35s of the ~40s macOS
-      # step; keep the slowest tests visible in every log.
+      # --durations: keep the slowest tests visible in every log
+      # (a getfqdn stall once hid 35s inside the macOS socket test).
       - name: Test with coverage
         run: >-
           uv run pytest -rs --durations=15
