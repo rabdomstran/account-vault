@@ -660,7 +660,14 @@ def test_live_scroll_commit_lag_under_main_thread_load(dedicated_chrome, capfd):
     # the 3s deadline once the handler alone blocks longer --
     # the deadline is headroom for idle lag, never a bound on
     # loaded lag. Prints [scroll-commit-lag-loaded] into the
-    # CI live log like the idle sample.
+    # CI live log like the idle sample. Only the endpoints are
+    # measured per run: they carry both assertions, and each
+    # loaded rep costs busy + the throttled-frame quantum
+    # (~2.9s on the Linux runner), so the intermediate levels
+    # (500/1500ms) cost ~25s of CI wall to re-print a curve
+    # already recorded in docs/latency-results.md from run
+    # 45023061499. 3200ms stays: it is the smallest load that
+    # crosses the deadline on an unthrottled machine too.
     from urllib.parse import quote
 
     from account_vault.browser import SCROLL_SETTLE_TIMEOUT, CdpBrowser
@@ -677,7 +684,7 @@ def test_live_scroll_commit_lag_under_main_thread_load(dedicated_chrome, capfd):
             "}, {passive: false})"
         )
         i = 0
-        for busy_ms in (0, 500, 1500, 3200):
+        for busy_ms in (0, 3200):
             lags_ms = []
             for _ in range(3):
                 down = i % 2 == 0
