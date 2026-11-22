@@ -112,6 +112,8 @@ def environment(device: str | None, compile_model: bool, revision: str | None) -
     import torch
     import transformers
 
+    from account_vault.local_decider import DEFAULT_REVISION
+
     return {
         "date": time.strftime("%Y-%m-%d"),
         "platform": platform.platform(),
@@ -123,7 +125,7 @@ def environment(device: str | None, compile_model: bool, revision: str | None) -
         "transformers": transformers.__version__,
         "git_sha": _probe("git", "rev-parse", "--short", "HEAD"),
         "model": "LiquidAI/d1-2B",
-        "revision": revision or "main (unpinned)",
+        "revision": revision or f"{DEFAULT_REVISION} (loader default pin)",
         "device": device,
         "mode": "compiled (model.compile())" if compile_model else "eager",
         "dtype": "float32" if device == "cpu" else "bfloat16",

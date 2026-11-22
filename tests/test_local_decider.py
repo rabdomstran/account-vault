@@ -169,6 +169,52 @@ def test_validate_accepts_an_injected_model_without_torch(monkeypatch):
     assert LocalD1Decider(settings=SETTINGS, model=FakeD1()).validate() is None
 
 
+def _stub_loader(monkeypatch, calls):
+    class Loaded:
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+    def from_pretrained(model_id, **kwargs):
+        calls["from_pretrained"] = (model_id, kwargs)
+        return Loaded()
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch())
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(AutoModel=types.SimpleNamespace(from_pretrained=from_pretrained)),
+    )
+
+
+def test_load_d1_model_pins_the_reviewed_revision_by_default(monkeypatch):
+    # trust_remote_code executes Hub Python: the default load must name
+    # the revision docs/d1-mps-smoke.md records as read/scanned, never
+    # floating `main` (revision=None).
+    calls = {}
+    _stub_loader(monkeypatch, calls)
+    local_decider.load_d1_model()
+    assert calls["from_pretrained"] == (
+        "LiquidAI/d1-2B",
+        {"trust_remote_code": True, "dtype": "f32", "revision": local_decider.DEFAULT_REVISION},
+    )
+    assert local_decider.DEFAULT_REVISION == "a6bce774e6dde338dcc3036ceb5d91f78bf4c19e"
+
+
+def test_load_d1_model_refuses_an_unpinned_custom_hub_checkpoint(monkeypatch):
+    calls = {}
+    _stub_loader(monkeypatch, calls)
+    with pytest.raises(model.ModelError, match="no revision pin"):
+        local_decider.load_d1_model("SomeoneElse/not-d1")
+    assert "from_pretrained" not in calls  # refused before any Hub code can load
+
+    # An explicit pin is the caller's reviewed code: it loads as given.
+    local_decider.load_d1_model("SomeoneElse/not-d1", revision="deadbeef")
+    assert calls["from_pretrained"][1]["revision"] == "deadbeef"
+
+
 def test_load_d1_model_loads_bf16_on_mps_and_compiles_only_when_asked(monkeypatch):
     calls = {}
 
