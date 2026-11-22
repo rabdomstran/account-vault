@@ -39,8 +39,8 @@ notes, so nobody games a gate by accident:
   unregistered markers, duplicate parametrization IDs, and unknown
   config keys are errors, and deprecation warnings fail the run.
   Register new markers in that table.
-- **The socket test** (`test_demo.py`, marked `socket`) must pass on
-  both Linux and macOS CI; it only skips where binds are forbidden.
+- **The socket tests** (`test_demo.py`, marked `socket`) must pass
+  on both Linux and macOS CI; they only skip where binds are forbidden.
 - **Live Chrome tests** (`tests/test_live_cdp.py`) are a required CI
   gate (`live (headless Chrome)`, Linux): real headless Chrome, a
   throwaway profile, `file:`/`data:` pages only — no network or keys.
