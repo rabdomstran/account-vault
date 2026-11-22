@@ -230,9 +230,7 @@ class Agent:
         )
         if self.record_dir:
             self.record_dir.mkdir(parents=True, exist_ok=True)
-            # Static pages have no screenshot; record only when one exists.
-            if page.get("screenshot"):
-                (self.record_dir / "000000.jpg").write_bytes(base64.b64decode(page["screenshot"]))
+            self._record_screenshot(page, "000000.jpg")
 
     def _observe_settled(self) -> JsonDict:
         """Observe, retrying while the element table is still empty.
@@ -337,370 +335,372 @@ class Agent:
         return int(round((time.perf_counter() - state["started_at"]) * 1000))
 
     def command(self, name: str, body: JsonDict | None = None) -> JsonDict:
+        """Dispatch a tick/predict/act command (exact upstream names)."""
         body = body or {}
-        state = self.state
         if name == "tick":
-            history_before = len(state["history"])
-            try:
-                self.command("predict", {})
-                # A low-confidence predict leaves no decision (see below);
-                # there is nothing to act on this tick.
-                if state["decision"] is None:
-                    return self.snapshot()
-                return self.command("act", {"fingerprint": state["page"]["fingerprint"]})
-            except StalePage as error:
-                state["decision"] = None
-                # DEVIATION: bound consecutive never-executed decisions.
-                # Upstream's only stuck-run guard counts executed actions
-                # in history; a decision whose target is missing (bad
-                # index, vanished element, identity change — #132) raises
-                # StalePage here and records no history, so that guard
-                # could never fire and the run re-asked the model until
-                # the 120-call budget (#55) crashed run() — #94's "spend
-                # the entire budget proving nothing happened" via stale
-                # decisions. Three in a row (mirroring the 3-repeat
-                # no-progress stop) end the run blocked. A tick that did
-                # execute before its post-action observation went stale
-                # is progress, not a strike.
-                executed = len(state["history"]) > history_before
-                fingerprint_before = state["page"]["fingerprint"]
-                self._refresh()
-                # DEVIATION: a covered rejection (#245) that changed the
-                # offered set is knowledge progress, not a stale strike:
-                # the snapshot just learned to omit an unhittable node,
-                # and counting it would block runs that need more than
-                # max_stale_decisions learning steps (whole tables sit
-                # under consent banners; #137) before a hittable
-                # runner-up is ever offered. Decision-layer drops cannot
-                # learn this case at all -- nothing executed, so nothing
-                # enters history. The model-call budget still bounds it.
-                learned_covered = (
-                    isinstance(error, CoveredTarget) and state["page"]["fingerprint"] != fingerprint_before
-                )
-                if executed:
-                    state["stale_streak"] = 0
-                elif learned_covered:
-                    state["stale_streak"] = state.get("stale_streak", 0)
-                else:
-                    state["stale_streak"] = state.get("stale_streak", 0) + 1
-                state["elapsed_ms"] = self._elapsed(state)
-                if state["stale_streak"] >= self.max_stale_decisions:
-                    state["status"] = "blocked"
-                    state["blocked_reason"] = f"{state['stale_streak']} consecutive decisions never executed: {error}"
-                else:
-                    state["status"] = "ready"
-                return self.snapshot()
+            return self._tick()
         elif name == "predict":
-            if not state["browser"]:
-                raise ValueError("Start a demo first")
-            if state["started_at"] is None:
-                state["started_at"] = time.perf_counter()
-            if not state["browser"].fresh(state["page"]):
-                self._refresh()
-            state["decision"] = None
-            # Code-owned completion is checked before spending a model
-            # call: a task already satisfied on the observed page ends
-            # here even if the model would keep acting (or BLOCKED).
-            if self._code_done():
-                return self.snapshot()
-            if state["status"] in {"done", "blocked"}:
-                raise ValueError("This run has stopped. Start a fresh demo.")
-            # DEVIATION: named budget. Upstream's `MAX_STEPS * 2` is
-            # undocumented and its error does not say which limit fired
-            # (upstream issue #55).
-            if len(state["decisions"]) >= MAX_DECISIONS:
-                # Terminal state first, error second (as act already does
-                # for MAX_ACTIONS), so run() can land on blocked instead
-                # of leaking this as a traceback (upstream issue #55).
-                state["status"] = "blocked"
-                state["blocked_reason"] = f"Reached the {MAX_DECISIONS}-request model-call budget"
-                raise ValueError(state["blocked_reason"])
-            decision = self.decider.choose(self._offered_page(), state["goal"], state["history"])
-            _check_decision(decision)
-            # A cycle suppression buys exactly one decision on its source
-            # page, then lapses: the control is reoffered next visit, and
-            # executing the same transition again is what reaches the
-            # blocking threshold. No-op exclusions lapse by fingerprint
-            # instead (see _refresh), not by being offered around.
-            state["cycle_suppressed"] = [
-                entry
-                for entry in (state.get("cycle_suppressed") or [])
-                if entry.get("from_url") != state["page"]["url"]
-            ]
-            state["decisions"].append(
-                {
-                    **decision,
-                    "fingerprint": state["page"]["fingerprint"],
-                    "elapsed_ms": self._elapsed(state),
-                }
-            )
-            # DEVIATION: confidence gate for ordinary actions (upstream
-            # issue #120; ADR-001 Decision 3). Upstream records confidence
-            # but executes whatever was chosen, however unsure the model
-            # was. The floor applies to BOTH the operation confidence and
-            # the selected target's confidence when a target head ran
-            # (upstream PR #127 gates both the same way; the first local
-            # cut read only "confidence", leaving target_confidence
-            # recorded-but-unused and the default off, i.e. shipped
-            # effect zero). A below-floor decision is not acted on:
-            # re-observe once (the page may still be settling), then stop
-            # as blocked with the reason named and on_uncertain notified
-            # -- ADR-001's optional hosted re-ask belongs to that caller
-            # hook, never an automatic second call from the loop (vault
-            # state must not leave the machine by default). Terminal
-            # operations skip the gate: DONE is governed by the checker
-            # in act, BLOCKED is already the model's stop. Injected
-            # decisions without a target_confidence key gate on the
-            # operation alone; min_confidence=0.0 disables the gate.
-            failed_confidences: list[str] = []
-            if self.min_confidence > 0 and decision["operation"] not in {"DONE", "BLOCKED"}:
-                if decision["confidence"] < self.min_confidence:
-                    failed_confidences.append("operation")
-                target_confidence = decision.get("target_confidence")
-                if target_confidence is not None and target_confidence < self.min_confidence:
-                    failed_confidences.append("target")
-            if failed_confidences:
-                self._low_confidence_reobserves += 1
-                if self._low_confidence_reobserves >= 2:
-                    state["status"] = "blocked"
-                    state["blocked_reason"] = (
-                        f"Decision confidence below the {self.min_confidence} floor "
-                        f"({', '.join(failed_confidences)}) after re-observing; nothing executed"
-                    )
-                    state["elapsed_ms"] = self._elapsed(state)
-                    on_uncertain = getattr(self, "on_uncertain", None)
-                    if on_uncertain is not None:
-                        on_uncertain(
-                            {
-                                "reason": "below_confidence_floor",
-                                "failed_confidences": failed_confidences,
-                                "executed": False,
-                                "operation": decision["operation"],
-                                "choice": decision["choice"],
-                                "target": decision.get("target"),
-                                "confidence": decision["confidence"],
-                                "target_confidence": decision.get("target_confidence"),
-                                "min_confidence": self.min_confidence,
-                            }
-                        )
-                else:
-                    self._refresh()
-                    state["status"] = "ready"
-                return self.snapshot()
-            self._low_confidence_reobserves = 0
-            state["decision"] = decision
-            state["status"] = "predicted"
+            return self._predict()
         elif name == "act":
-            decision, page = state["decision"], state["page"]
-            if not decision or body.get("fingerprint") != page["fingerprint"]:
-                raise ValueError("Observe and choose before acting")
-            _check_decision(decision)  # direct act callers get predict's guard too
-            # Consume once, before any mutation or model call. A retry cannot double-click.
+            return self._act(body)
+        raise ValueError("Unknown command")
+
+    def _block(self, reason: str) -> None:
+        """Terminal blocked state: status + the reason a reader can act on."""
+        self.state["status"] = "blocked"
+        self.state["blocked_reason"] = reason
+
+    def _record_screenshot(self, page: JsonDict, filename: str) -> None:
+        # Static pages have no screenshot; record only when one exists.
+        if self.record_dir is not None and page.get("screenshot"):
+            (self.record_dir / filename).write_bytes(base64.b64decode(page["screenshot"]))
+
+    def _tick(self) -> JsonDict:
+        state = self.state
+        history_before = len(state["history"])
+        try:
+            self.command("predict", {})
+            # A low-confidence predict leaves no decision (see below);
+            # there is nothing to act on this tick.
+            if state["decision"] is None:
+                return self.snapshot()
+            return self.command("act", {"fingerprint": state["page"]["fingerprint"]})
+        except StalePage as error:
             state["decision"] = None
-            selected = decision["choice"]
-            if selected in {"DONE", "BLOCKED"}:
-                if not state["browser"].fresh(page):
-                    state["status"] = "ready"
-                    raise StalePage("Page changed since the decision. Choose again.")
-                if selected == "DONE":
-                    # DEVIATION: the model's DONE is a claim, not evidence
-                    # (ADR-001 Decision 1; upstream README states the same
-                    # rule and leaves it to examples). It is accepted only
-                    # through the independent checker; an unconfirmed DONE
-                    # -- or any DONE with no checker configured -- ends
-                    # blocked as unverified, never done, so a confident
-                    # false DONE cannot be reported as success.
-                    if self._code_done():
-                        return self.snapshot()
-                    state["status"] = "blocked"
-                    state["blocked_reason"] = (
-                        "DONE without independent verification: no done_when checker is configured; "
-                        "the model's DONE is not evidence of success"
-                        if getattr(self, "done_when", None) is None
-                        else "DONE rejected: the independent done_when check did not pass on the observed page"
+            # DEVIATION: bound consecutive never-executed decisions.
+            # Upstream's only stuck-run guard counts executed actions
+            # in history; a decision whose target is missing (bad
+            # index, vanished element, identity change — #132) raises
+            # StalePage here and records no history, so that guard
+            # could never fire and the run re-asked the model until
+            # the 120-call budget (#55) crashed run() — #94's "spend
+            # the entire budget proving nothing happened" via stale
+            # decisions. Three in a row (mirroring the 3-repeat
+            # no-progress stop) end the run blocked. A tick that did
+            # execute before its post-action observation went stale
+            # is progress, not a strike.
+            executed = len(state["history"]) > history_before
+            fingerprint_before = state["page"]["fingerprint"]
+            self._refresh()
+            # DEVIATION: a covered rejection (#245) that changed the
+            # offered set is knowledge progress, not a stale strike:
+            # the snapshot just learned to omit an unhittable node,
+            # and counting it would block runs that need more than
+            # max_stale_decisions learning steps (whole tables sit
+            # under consent banners; #137) before a hittable
+            # runner-up is ever offered. Decision-layer drops cannot
+            # learn this case at all -- nothing executed, so nothing
+            # enters history. The model-call budget still bounds it.
+            learned_covered = isinstance(error, CoveredTarget) and state["page"]["fingerprint"] != fingerprint_before
+            if executed:
+                state["stale_streak"] = 0
+            elif learned_covered:
+                state["stale_streak"] = state.get("stale_streak", 0)
+            else:
+                state["stale_streak"] = state.get("stale_streak", 0) + 1
+            state["elapsed_ms"] = self._elapsed(state)
+            if state["stale_streak"] >= self.max_stale_decisions:
+                self._block(f"{state['stale_streak']} consecutive decisions never executed: {error}")
+            else:
+                state["status"] = "ready"
+            return self.snapshot()
+
+    def _predict(self) -> JsonDict:
+        state = self.state
+        if not state["browser"]:
+            raise ValueError("Start a demo first")
+        if state["started_at"] is None:
+            state["started_at"] = time.perf_counter()
+        if not state["browser"].fresh(state["page"]):
+            self._refresh()
+        state["decision"] = None
+        # Code-owned completion is checked before spending a model
+        # call: a task already satisfied on the observed page ends
+        # here even if the model would keep acting (or BLOCKED).
+        if self._code_done():
+            return self.snapshot()
+        if state["status"] in {"done", "blocked"}:
+            raise ValueError("This run has stopped. Start a fresh demo.")
+        # DEVIATION: named budget. Upstream's `MAX_STEPS * 2` is
+        # undocumented and its error does not say which limit fired
+        # (upstream issue #55).
+        if len(state["decisions"]) >= MAX_DECISIONS:
+            # Terminal state first, error second (as act already does
+            # for MAX_ACTIONS), so run() can land on blocked instead
+            # of leaking this as a traceback (upstream issue #55).
+            self._block(f"Reached the {MAX_DECISIONS}-request model-call budget")
+            raise ValueError(state["blocked_reason"])
+        decision = self.decider.choose(self._offered_page(), state["goal"], state["history"])
+        _check_decision(decision)
+        # A cycle suppression buys exactly one decision on its source
+        # page, then lapses: the control is reoffered next visit, and
+        # executing the same transition again is what reaches the
+        # blocking threshold. No-op exclusions lapse by fingerprint
+        # instead (see _refresh), not by being offered around.
+        state["cycle_suppressed"] = [
+            entry for entry in (state.get("cycle_suppressed") or []) if entry.get("from_url") != state["page"]["url"]
+        ]
+        state["decisions"].append(
+            {
+                **decision,
+                "fingerprint": state["page"]["fingerprint"],
+                "elapsed_ms": self._elapsed(state),
+            }
+        )
+        # DEVIATION: confidence gate for ordinary actions (upstream
+        # issue #120; ADR-001 Decision 3). Upstream records confidence
+        # but executes whatever was chosen, however unsure the model
+        # was. The floor applies to BOTH the operation confidence and
+        # the selected target's confidence when a target head ran
+        # (upstream PR #127 gates both the same way; the first local
+        # cut read only "confidence", leaving target_confidence
+        # recorded-but-unused and the default off, i.e. shipped
+        # effect zero). A below-floor decision is not acted on:
+        # re-observe once (the page may still be settling), then stop
+        # as blocked with the reason named and on_uncertain notified
+        # -- ADR-001's optional hosted re-ask belongs to that caller
+        # hook, never an automatic second call from the loop (vault
+        # state must not leave the machine by default). Terminal
+        # operations skip the gate: DONE is governed by the checker
+        # in act, BLOCKED is already the model's stop. Injected
+        # decisions without a target_confidence key gate on the
+        # operation alone; min_confidence=0.0 disables the gate.
+        failed_confidences: list[str] = []
+        if self.min_confidence > 0 and decision["operation"] not in {"DONE", "BLOCKED"}:
+            if decision["confidence"] < self.min_confidence:
+                failed_confidences.append("operation")
+            target_confidence = decision.get("target_confidence")
+            if target_confidence is not None and target_confidence < self.min_confidence:
+                failed_confidences.append("target")
+        if failed_confidences:
+            self._low_confidence_reobserves += 1
+            if self._low_confidence_reobserves >= 2:
+                self._block(
+                    f"Decision confidence below the {self.min_confidence} floor "
+                    f"({', '.join(failed_confidences)}) after re-observing; nothing executed"
+                )
+                state["elapsed_ms"] = self._elapsed(state)
+                on_uncertain = getattr(self, "on_uncertain", None)
+                if on_uncertain is not None:
+                    on_uncertain(
+                        {
+                            "reason": "below_confidence_floor",
+                            "failed_confidences": failed_confidences,
+                            "executed": False,
+                            "operation": decision["operation"],
+                            "choice": decision["choice"],
+                            "target": decision.get("target"),
+                            "confidence": decision["confidence"],
+                            "target_confidence": decision.get("target_confidence"),
+                            "min_confidence": self.min_confidence,
+                        }
                     )
-                    state["elapsed_ms"] = self._elapsed(state)
+            else:
+                self._refresh()
+                state["status"] = "ready"
+            return self.snapshot()
+        self._low_confidence_reobserves = 0
+        state["decision"] = decision
+        state["status"] = "predicted"
+        return self.snapshot()
+
+    def _act(self, body: JsonDict) -> JsonDict:
+        state = self.state
+        decision, page = state["decision"], state["page"]
+        if not decision or body.get("fingerprint") != page["fingerprint"]:
+            raise ValueError("Observe and choose before acting")
+        _check_decision(decision)  # direct act callers get predict's guard too
+        # Consume once, before any mutation or model call. A retry cannot double-click.
+        state["decision"] = None
+        selected = decision["choice"]
+        if selected in {"DONE", "BLOCKED"}:
+            if not state["browser"].fresh(page):
+                state["status"] = "ready"
+                raise StalePage("Page changed since the decision. Choose again.")
+            if selected == "DONE":
+                # DEVIATION: the model's DONE is a claim, not evidence
+                # (ADR-001 Decision 1; upstream README states the same
+                # rule and leaves it to examples). It is accepted only
+                # through the independent checker; an unconfirmed DONE
+                # -- or any DONE with no checker configured -- ends
+                # blocked as unverified, never done, so a confident
+                # false DONE cannot be reported as success.
+                if self._code_done():
                     return self.snapshot()
-                state["status"] = "blocked"
-                state["plan_index"] = 0
+                self._block(
+                    "DONE without independent verification: no done_when checker is configured; "
+                    "the model's DONE is not evidence of success"
+                    if getattr(self, "done_when", None) is None
+                    else "DONE rejected: the independent done_when check did not pass on the observed page"
+                )
                 state["elapsed_ms"] = self._elapsed(state)
                 return self.snapshot()
-            # DEVIATION: resolve by id AND stable node. Upstream resolves by
-            # positional id alone, so if a different live control inherited
-            # the id the wrong control is clicked with no error (upstream
-            # issue #132). A node mismatch is stale: re-observe, never act.
-            expected_node = decision.get("node")
-            action = next(
-                (
-                    a
-                    for a in page["actions"]
-                    if a["id"] == selected and (expected_node is None or a.get("node") == expected_node)
-                ),
-                None,
-            )
-            if action is None:
-                raise StalePage("Selected element changed identity since the decision. Observe again.")
-            if len(state["history"]) >= MAX_ACTIONS:
-                state["status"] = "blocked"
-                state["blocked_reason"] = f"Stopped at the {MAX_ACTIONS}-action budget"
-                raise ValueError(state["blocked_reason"])
-            text: str | None = None
-            helper: JsonDict | None = None
-            if action["kind"] == "fill":
-                if not state["browser"].fresh(page):
-                    raise StalePage("Page changed before text generation. Choose again.")
-                context = field_context(state["goal"], action, page, state["history"])
-                # DEVIATION: the stale-retry cache key includes the element's
-                # stable node. Upstream keys only on the helper input, so a
-                # value generated for one field can be typed into a
-                # different same-labeled field (upstream issue #191).
-                cache_key = (action.get("node"), json.dumps(context, sort_keys=True, default=str))
-                try:
-                    if self.pending_text and self.pending_text[0] == cache_key:
-                        _, text, helper = self.pending_text
-                    else:
-                        text, helper = self.text_provider(context)
-                        self.pending_text = (cache_key, text, helper)
-                        state["text_calls"].append({**helper, "field": action["label"], "value": text})
-                except MissingValueError as error:
-                    # DEVIATION: a documented {"text": null} answer means
-                    # "cannot fill this field", i.e. no supported operation
-                    # can progress — stop as blocked with the reason kept,
-                    # instead of upstream's generic malformed-payload crash
-                    # (upstream issue #203).
-                    state["status"] = "blocked"
-                    state["blocked_reason"] = str(error)
-                    state["elapsed_ms"] = self._elapsed(state)
-                    return self.snapshot()
-            # Browser.act checks freshness immediately before input, including after text generation.
-            state["browser"].act(action, page, text=text)
-            state["stale_streak"] = 0  # executed: not a stale strike (see tick)
-            self.pending_text = None
+            state["status"] = "blocked"
+            state["plan_index"] = 0
             state["elapsed_ms"] = self._elapsed(state)
-            # Record execution before observing. A stale post-action observation must not erase the action.
-            state["history"].append(
-                {
-                    "step": len(state["history"]) + 1,
-                    "action": action["label"],
-                    "kind": action["kind"],
-                    "choice": selected,
-                    "probability": decision["probabilities"][selected],
-                    "confidence": decision["confidence"],
-                    "latency_ms": decision["latency_ms"],
-                    "text": text,
-                    "text_helper": helper["model"] if helper else None,
-                    "text_latency_ms": helper["latency_ms"] if helper else 0,
-                    "operation": decision["operation"],
-                    "target": decision["target"],
-                    "page_changed": None,
-                    # Source page of the transition; "url" below is
-                    # rewritten to the landing page after observing.
-                    # Cycle counting needs both ends (see _cycle_key).
-                    "from_url": page["url"],
-                    "url": page["url"],
-                    "usage": decision["usage"],
-                    "executed_ms": self._elapsed(state),
-                    "elapsed_ms": state["elapsed_ms"],
-                    # DEVIATION (upstream PR #212): record where a scroll
-                    # started; scroll_after lands with the post-action
-                    # observation below. Together they prove to the next
-                    # decision whether the scroll advanced or hit a
-                    # boundary. If that observation fails, scroll_after
-                    # stays absent and no progress is assumed.
-                    **({"scroll_before": dict(page.get("scroll", {}))} if action["kind"] == "scroll" else {}),
-                }
-            )
-            state["page"] = state["browser"].observe(screenshot=self.screenshots)
-            state["elapsed_ms"] = self._elapsed(state)
-            state["history"][-1].update(
-                page_changed=state["page"]["fingerprint"] != page["fingerprint"],
-                url=state["page"]["url"],
-                elapsed_ms=state["elapsed_ms"],
-            )
-            if action["kind"] == "scroll":
-                state["history"][-1]["scroll_after"] = dict(state["page"].get("scroll", {}))
-            if self.record_dir is not None and state["page"].get("screenshot"):
-                (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
-                    base64.b64decode(state["page"]["screenshot"])
-                )
-            # Code-owned completion wins over the no-progress stops
-            # below: the executed action satisfied the independent
-            # checker, so the run is done however the page-diff looks.
-            if self._code_done():
+            return self.snapshot()
+        # DEVIATION: resolve by id AND stable node. Upstream resolves by
+        # positional id alone, so if a different live control inherited
+        # the id the wrong control is clicked with no error (upstream
+        # issue #132). A node mismatch is stale: re-observe, never act.
+        expected_node = decision.get("node")
+        action = next(
+            (
+                a
+                for a in page["actions"]
+                if a["id"] == selected and (expected_node is None or a.get("node") == expected_node)
+            ),
+            None,
+        )
+        if action is None:
+            raise StalePage("Selected element changed identity since the decision. Observe again.")
+        if len(state["history"]) >= MAX_ACTIONS:
+            self._block(f"Stopped at the {MAX_ACTIONS}-action budget")
+            raise ValueError(state["blocked_reason"])
+        text: str | None = None
+        helper: JsonDict | None = None
+        if action["kind"] == "fill":
+            if not state["browser"].fresh(page):
+                raise StalePage("Page changed before text generation. Choose again.")
+            context = field_context(state["goal"], action, page, state["history"])
+            # DEVIATION: the stale-retry cache key includes the element's
+            # stable node. Upstream keys only on the helper input, so a
+            # value generated for one field can be typed into a
+            # different same-labeled field (upstream issue #191).
+            cache_key = (action.get("node"), json.dumps(context, sort_keys=True, default=str))
+            try:
+                if self.pending_text and self.pending_text[0] == cache_key:
+                    _, text, helper = self.pending_text
+                else:
+                    text, helper = self.text_provider(context)
+                    self.pending_text = (cache_key, text, helper)
+                    state["text_calls"].append({**helper, "field": action["label"], "value": text})
+            except MissingValueError as error:
+                # DEVIATION: a documented {"text": null} answer means
+                # "cannot fill this field", i.e. no supported operation
+                # can progress — stop as blocked with the reason kept,
+                # instead of upstream's generic malformed-payload crash
+                # (upstream issue #203).
+                self._block(str(error))
+                state["elapsed_ms"] = self._elapsed(state)
                 return self.snapshot()
-            last = state["history"][-1]
-            # DEVIATION: give a no-op action its turn back (upstream PR
-            # #209; #67's fork does the same after 2 tries, #245 for
-            # covered controls). An action that left this page unchanged
-            # is dropped from the next offer while the fingerprint holds,
-            # so the runner-up is tried instead of repeating the dead
-            # control into the stop below. Progress or a deliberate wait
-            # reoffers everything. Waits themselves are never dropped:
-            # waiting on a loading page is not an action that went nowhere.
-            if last["page_changed"] is True or last["kind"] == "wait":
-                state["no_progress"] = []
-            elif selected not in (state.get("no_progress") or []):
-                state["no_progress"] = [*(state.get("no_progress") or []), selected]
-            repeated = state["history"][-3:]
-            # DEVIATION: page_changed stays None when the post-action
-            # observation failed (the exception path above preserves the
-            # history entry). Upstream's `is False` test then disables this
-            # no-progress stop forever and a stalled run keeps spending
-            # model calls (upstream issue #94). None means "no observed
-            # progress" and counts toward the stop, like False.
-            consecutive = len(repeated) == 3 and all(
-                h["page_changed"] in (False, None) and h["kind"] != "wait" for h in repeated
-            )
-            # DEVIATION: episode-wide no-op cap (#209). With the drop
-            # above, an unsatisfiable goal can wander through distinct
-            # dead controls without ever producing three unchanged pages
-            # in a row; this bounds that exploration. Derived from
-            # history so the trace and the rule cannot disagree.
-            episode_noops = sum(
-                1 for h in state["history"] if h["page_changed"] in (False, None) and h["kind"] != "wait"
-            )
-            state["status"] = "ready"
-            if consecutive:
-                state["status"] = "blocked"
-                state["blocked_reason"] = "Three consecutive actions left the page unchanged"
-            elif episode_noops >= MAX_NO_PROGRESS:
-                state["status"] = "blocked"
-                state["blocked_reason"] = (
-                    f"{episode_noops} actions left the page unchanged (episode cap {MAX_NO_PROGRESS})"
+        # Browser.act checks freshness immediately before input, including after text generation.
+        state["browser"].act(action, page, text=text)
+        state["stale_streak"] = 0  # executed: not a stale strike (see tick)
+        self.pending_text = None
+        state["elapsed_ms"] = self._elapsed(state)
+        # Record execution before observing. A stale post-action observation must not erase the action.
+        state["history"].append(
+            {
+                "step": len(state["history"]) + 1,
+                "action": action["label"],
+                "kind": action["kind"],
+                "choice": selected,
+                "probability": decision["probabilities"][selected],
+                "confidence": decision["confidence"],
+                "latency_ms": decision["latency_ms"],
+                "text": text,
+                "text_helper": helper["model"] if helper else None,
+                "text_latency_ms": helper["latency_ms"] if helper else 0,
+                "operation": decision["operation"],
+                "target": decision["target"],
+                "page_changed": None,
+                # Source page of the transition; "url" below is
+                # rewritten to the landing page after observing.
+                # Cycle counting needs both ends (see _cycle_key).
+                "from_url": page["url"],
+                "url": page["url"],
+                "usage": decision["usage"],
+                "executed_ms": self._elapsed(state),
+                "elapsed_ms": state["elapsed_ms"],
+                # DEVIATION (upstream PR #212): record where a scroll
+                # started; scroll_after lands with the post-action
+                # observation below. Together they prove to the next
+                # decision whether the scroll advanced or hit a
+                # boundary. If that observation fails, scroll_after
+                # stays absent and no progress is assumed.
+                **({"scroll_before": dict(page.get("scroll", {}))} if action["kind"] == "scroll" else {}),
+            }
+        )
+        state["page"] = state["browser"].observe(screenshot=self.screenshots)
+        state["elapsed_ms"] = self._elapsed(state)
+        state["history"][-1].update(
+            page_changed=state["page"]["fingerprint"] != page["fingerprint"],
+            url=state["page"]["url"],
+            elapsed_ms=state["elapsed_ms"],
+        )
+        if action["kind"] == "scroll":
+            state["history"][-1]["scroll_after"] = dict(state["page"].get("scroll", {}))
+        self._record_screenshot(state["page"], f"{state['elapsed_ms']:06d}.jpg")
+        # Code-owned completion wins over the no-progress stops
+        # below: the executed action satisfied the independent
+        # checker, so the run is done however the page-diff looks.
+        if self._code_done():
+            return self.snapshot()
+        last = state["history"][-1]
+        # DEVIATION: give a no-op action its turn back (upstream PR
+        # #209; #67's fork does the same after 2 tries, #245 for
+        # covered controls). An action that left this page unchanged
+        # is dropped from the next offer while the fingerprint holds,
+        # so the runner-up is tried instead of repeating the dead
+        # control into the stop below. Progress or a deliberate wait
+        # reoffers everything. Waits themselves are never dropped:
+        # waiting on a loading page is not an action that went nowhere.
+        if last["page_changed"] is True or last["kind"] == "wait":
+            state["no_progress"] = []
+        elif selected not in (state.get("no_progress") or []):
+            state["no_progress"] = [*(state.get("no_progress") or []), selected]
+        repeated = state["history"][-3:]
+        # DEVIATION: page_changed stays None when the post-action
+        # observation failed (the exception path above preserves the
+        # history entry). Upstream's `is False` test then disables this
+        # no-progress stop forever and a stalled run keeps spending
+        # model calls (upstream issue #94). None means "no observed
+        # progress" and counts toward the stop, like False.
+        consecutive = len(repeated) == 3 and all(
+            h["page_changed"] in (False, None) and h["kind"] != "wait" for h in repeated
+        )
+        # DEVIATION: episode-wide no-op cap (#209). With the drop
+        # above, an unsatisfiable goal can wander through distinct
+        # dead controls without ever producing three unchanged pages
+        # in a row; this bounds that exploration. Derived from
+        # history so the trace and the rule cannot disagree.
+        episode_noops = sum(1 for h in state["history"] if h["page_changed"] in (False, None) and h["kind"] != "wait")
+        state["status"] = "ready"
+        if consecutive:
+            self._block("Three consecutive actions left the page unchanged")
+        elif episode_noops >= MAX_NO_PROGRESS:
+            self._block(f"{episode_noops} actions left the page unchanged (episode cap {MAX_NO_PROGRESS})")
+        elif self.max_cycle_repeats and _cycle_key(last) is not None:
+            # DEVIATION: page-changing cycle stop (upstream issue
+            # #247: sort -> index -> category -> repeat, 44 actions,
+            # every step changing the page so repeat/unchanged guards
+            # never fire). No fix exists upstream — the issue is open
+            # at HEAD cf3c406 with no linked PR (checked with gh,
+            # 2026-11-21); adjacent PRs address cousins (#209 no-op
+            # drop/cap, #245 covered-control reoffer, #212/#195
+            # premature BLOCKED while scrolling), not cycles. The
+            # #247 comment's shape, adopted here: count identical
+            # transitions (source URL, kind, label, text, landing
+            # URL) over the recent window; at two, drop the control
+            # for one decision on that source page so the model must
+            # pick something else; at max_cycle_repeats, give up
+            # cleanly as blocked. Dropping is safe for the
+            # one-request contract -- it happens between decisions,
+            # on the fresh observation, exactly as #209's skip does;
+            # it does not mutate an in-flight decision. 0 disables.
+            key = _cycle_key(last)
+            eligible = [h for h in state["history"] if _cycle_key(h) is not None][-CYCLE_WINDOW:]
+            repeats = sum(1 for h in eligible if _cycle_key(h) == key)
+            if repeats >= self.max_cycle_repeats:
+                self._block(
+                    f"Action cycle: {last['action']!r} from {last.get('from_url')} to {last['url']} "
+                    f"{repeats} times in the last {len(eligible)} actions"
                 )
-            elif self.max_cycle_repeats and _cycle_key(last) is not None:
-                # DEVIATION: page-changing cycle stop (upstream issue
-                # #247: sort -> index -> category -> repeat, 44 actions,
-                # every step changing the page so repeat/unchanged guards
-                # never fire). No fix exists upstream — the issue is open
-                # at HEAD cf3c406 with no linked PR (checked with gh,
-                # 2026-11-21); adjacent PRs address cousins (#209 no-op
-                # drop/cap, #245 covered-control reoffer, #212/#195
-                # premature BLOCKED while scrolling), not cycles. The
-                # #247 comment's shape, adopted here: count identical
-                # transitions (source URL, kind, label, text, landing
-                # URL) over the recent window; at two, drop the control
-                # for one decision on that source page so the model must
-                # pick something else; at max_cycle_repeats, give up
-                # cleanly as blocked. Dropping is safe for the
-                # one-request contract -- it happens between decisions,
-                # on the fresh observation, exactly as #209's skip does;
-                # it does not mutate an in-flight decision. 0 disables.
-                key = _cycle_key(last)
-                eligible = [h for h in state["history"] if _cycle_key(h) is not None][-CYCLE_WINDOW:]
-                repeats = sum(1 for h in eligible if _cycle_key(h) == key)
-                if repeats >= self.max_cycle_repeats:
-                    state["status"] = "blocked"
-                    state["blocked_reason"] = (
-                        f"Action cycle: {last['action']!r} from {last.get('from_url')} to {last['url']} "
-                        f"{repeats} times in the last {len(eligible)} actions"
-                    )
-                elif repeats == 2:
-                    suppression = {"from_url": last.get("from_url"), "kind": last["kind"], "label": last["action"]}
-                    if suppression not in (state.get("cycle_suppressed") or []):
-                        state["cycle_suppressed"] = [*(state.get("cycle_suppressed") or []), suppression]
-        else:
-            raise ValueError("Unknown command")
+            elif repeats == 2:
+                suppression = {"from_url": last.get("from_url"), "kind": last["kind"], "label": last["action"]}
+                if suppression not in (state.get("cycle_suppressed") or []):
+                    state["cycle_suppressed"] = [*(state.get("cycle_suppressed") or []), suppression]
         return self.snapshot()
 
     def run(self) -> Iterator[JsonDict]:
