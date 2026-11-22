@@ -48,7 +48,6 @@ dev = [
     "ruff>=0.14,<1",
     "pytest-cov>=6,<8",
     "mypy>=2.4,<3",
-    "pytest-xdist>=3,<4",
 ]
 
 [tool.ruff]

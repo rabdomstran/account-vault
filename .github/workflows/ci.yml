@@ -116,14 +116,11 @@ jobs:
       # Coverage floor: suite measures 92% (browser.py 97%, __main__
       # 100%; remaining gaps are mostly demo.py and model.py edge
       # paths). 89 is the regression floor, not an aspiration.
-      # macOS runners take ~40s for this ~4s suite single-process, so
-      # they fan out with xdist; Ubuntu stays single-process (xdist
-      # startup would eat the win there).
+      # --durations: one macOS socket test is ~35s of the ~40s macOS
+      # step; keep the slowest tests visible in every log.
       - name: Test with coverage
-        env:
-          XDIST: ${{ matrix.os == 'macos-latest' && '-n auto' || '' }}
         run: >-
-          uv run pytest -rs --durations=15 $XDIST
+          uv run pytest -rs --durations=15
           --cov=account_vault
           --cov-report=term-missing
           --cov-fail-under=89
