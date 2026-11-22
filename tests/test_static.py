@@ -231,9 +231,11 @@ def test_loop_runs_end_to_end_on_static_file():
         assert final["status"] == "done"
         result = verify(final["page"], FILLS)
         assert result["passed"], result
-        # Six executed actions + one terminal DONE decision.
+        # Six executed actions; the checker ends the run from code on
+        # the post-Search page, so no seventh (DONE) decision is spent.
         assert [h["kind"] for h in final["history"]] == ["fill", "fill", "fill", "select", "click", "click"]
-        assert len(final["decisions"]) == 7
+        assert len(final["decisions"]) == 6
+        assert final["done_by"] == "code"
         assert len(final["text_calls"]) == 3
 
 
@@ -405,7 +407,11 @@ def test_cycle_drop_lets_the_runner_up_finish_the_task():
     # blocked on the 3rd Design click; dropping the link for one decision
     # lets the same decider open Casa Flora and finish.
     with Agent(
-        str(CATALOG), "Open Casa Flora", decider=RecoveringCycleDecider(), text_provider=MappingTextProvider({})
+        str(CATALOG),
+        "Open Casa Flora",
+        decider=RecoveringCycleDecider(),
+        text_provider=MappingTextProvider({}),
+        done_when=lambda page: "Free cancellation included" in page["text"],
     ) as agent:
         list(agent.run())
         assert agent.state["status"] == "done"

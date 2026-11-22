@@ -201,10 +201,16 @@ selected by environment variable (ADR-001, Decision §2):
 | `TEXT_MODEL_BASE_URL` / `TEXT_MODEL` / `TEXT_MODEL_API_KEY` | Small OpenAI-compatible model used only for `TYPE_TEXT` (defaults: OpenRouter, `inception/mercury-2.5`) |
 | `TEXT_MODEL_REASONING` | `none` — reasoning disabled for the text helper |
 
-Confidence gating (planned, per ADR-001): if the operation or target
-confidence falls below a tuned threshold, the step re-observes once and
-may escalate to hosted Jev — never with vault secrets or credential field
-values in state; those steps are local-only by policy.
+Confidence gating (ADR-001 Decision 3): ordinary actions execute only
+when both operation and target confidence clear `Agent(min_confidence=…)`
+(default 0.5, the TypeSafe routing-example floor — tune per model;
+`0.0` disables). Below the floor the loop re-observes once, then stops
+`blocked` and notifies `on_uncertain`; any hosted-Jev re-ask is the
+caller's job from that hook — never automatic, and never with vault
+secrets or credential field values in state. Completion is likewise
+code-owned: a run reaches `done` only through the caller's independent
+`Agent(done_when=…)` checker (the offline double's checker is adopted
+automatically); an unconfirmed model `DONE` ends `blocked`.
 
 ### Browser attach safety
 

@@ -78,8 +78,8 @@ class FakeAgent:
 
     instances = []
 
-    def __init__(self, html, goal, settings=None):
-        self.html, self.goal, self.settings = html, goal, settings
+    def __init__(self, html, goal, settings=None, done_when=None):
+        self.html, self.goal, self.settings, self.done_when = html, goal, settings, done_when
         FakeAgent.instances.append(self)
 
     def __enter__(self):
@@ -112,6 +112,9 @@ def test_systemone_branch_builds_agent_from_settings(monkeypatch, capsys):
     main(["--decider", "systemone", "--goal", "find stays"])
     (agent,) = FakeAgent.instances
     assert agent.settings is sentinel and agent.goal == "find stays"
+    # The real decider's DONE is checker-owned in the loop, not only in
+    # the post-run report: the branch hands verify() over as done_when.
+    assert callable(agent.done_when) and agent.done_when(passing_page()) is True
     assert "OK: loop reached DONE" in capsys.readouterr().out
 
 

@@ -40,13 +40,14 @@ def page(actions=None):
     return state
 
 
-def decision(action="e1", node=10, confidence=1.0, operation="TYPE_TEXT"):
+def decision(action="e1", node=10, confidence=1.0, operation="TYPE_TEXT", target_confidence=None):
     return {
         "choice": action,
         "node": node,
         "operation": operation,
         "target": "1",
         "confidence": confidence,
+        "target_confidence": target_confidence,
         "probabilities": {action: 1.0},
         "latency_ms": 10,
         "usage": {},
@@ -61,6 +62,8 @@ def make_runner(p):
     a.decider = Mock(validate=Mock(return_value=None))
     a.text_provider = lambda context: loop.field_text(context)
     a.min_confidence = 0.0
+    a.done_when = None
+    a.on_uncertain = None
     a.max_empty_observes = 5
     a.max_stale_decisions = 3
     a.max_cycle_repeats = 3
@@ -321,6 +324,191 @@ def test_low_confidence_decision_is_not_executed():
     runner.command("predict", {})
     assert runner.state["status"] == "blocked"  # still unsure -> stop
     runner.state["browser"].act.assert_not_called()
+
+
+# --- upstream issue #120 completed + ADR-001 Decision 3: the gate covers --
+# --- BOTH confidences, is on by default, and notifies before blocking -----
+# The first #120 fix gated only the operation confidence
+# (model.parse_choose_response's "confidence"); target_confidence was
+# recorded and never read, and min_confidence defaulted to 0.0 (off), so
+# the shipped effect was exactly zero (docs/decide-accuracy-ceiling.md
+# §3.4). Upstream #120 asks for a floor on "both operation confidence and
+# selected-target confidence" with a caller hook; upstream PR #127 gates
+# both the same way. Default 0.5 is the TypeSafe confidence-routing
+# example floor -- an initial policy value to tune per model (ADR-001),
+# not a calibrated guarantee. 0.0 still disables the gate.
+
+
+def test_low_target_confidence_is_gated_and_notifies_on_uncertain():
+    p = page()
+    runner = make_runner(p)
+    runner.min_confidence = 0.9
+    runner.on_uncertain = Mock()
+    # Operation sure, target unsure: the old operation-only gate executed.
+    runner.decider.choose.return_value = decision(confidence=0.95, target_confidence=0.4)
+    runner.state["status"] = "ready"
+    runner.command("predict", {})
+    assert runner.state["decision"] is None
+    assert runner.state["status"] == "ready"  # re-observe once first
+    runner.on_uncertain.assert_not_called()
+    runner.command("predict", {})
+    assert runner.state["status"] == "blocked"
+    assert "confidence" in runner.state["blocked_reason"].lower()
+    (event,), _ = runner.on_uncertain.call_args
+    assert event["reason"] == "below_confidence_floor"
+    assert event["failed_confidences"] == ["target"]
+    assert event["executed"] is False
+    runner.on_uncertain.assert_called_once()
+    runner.state["browser"].act.assert_not_called()
+
+
+def test_both_confidences_below_floor_are_both_named():
+    p = page()
+    runner = make_runner(p)
+    runner.min_confidence = 0.9
+    runner.on_uncertain = Mock()
+    runner.decider.choose.return_value = decision(confidence=0.4, target_confidence=0.3)
+    runner.state["status"] = "ready"
+    runner.command("predict", {})
+    runner.command("predict", {})
+    assert runner.state["status"] == "blocked"
+    (event,), _ = runner.on_uncertain.call_args
+    assert event["failed_confidences"] == ["operation", "target"]
+
+
+def test_confidence_exactly_at_floor_still_executes():
+    p = page()
+    runner = make_runner(p)
+    runner.min_confidence = 0.5
+    runner.decider.choose.return_value = decision(confidence=0.5, target_confidence=0.5)
+    runner.state["status"] = "ready"
+    runner.command("predict", {})
+    assert runner.state["decision"] is not None
+    assert runner.state["status"] == "predicted"
+
+
+def test_missing_target_confidence_gates_on_operation_alone():
+    # Injected deciders predating target_confidence carry no such key;
+    # absent means "no target head" (scroll/wait/terminal), not 0.0.
+    p = page()
+    runner = make_runner(p)
+    runner.min_confidence = 0.9
+    bare = decision(confidence=0.95)
+    del bare["target_confidence"]
+    runner.decider.choose.return_value = bare
+    runner.state["status"] = "ready"
+    runner.command("predict", {})
+    assert runner.state["decision"] is not None
+
+
+# --- DONE requires independent verification (ADR-001 Decision 1; ---------
+# --- upstream PR #99's code-owned completion, made authoritative) ---------
+# Agent.act accepted the model's DONE after only a freshness check, so a
+# confident false DONE was reported as success on the real-decider path;
+# independent verification existed only outside the loop (__main__.verify,
+# HeuristicDecider.done_when). Now a caller checker (Agent(done_when=...),
+# or the offline double's own done_when) is the only route to "done":
+# it can end the run from code, and a model DONE it does not confirm --
+# or any DONE with no checker at all -- ends blocked as unverified.
+
+
+def _act_done(runner):
+    runner.state["decision"] = decision("DONE", node=None, operation="DONE")
+    return runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+
+
+def test_model_done_without_a_checker_is_blocked_not_done():
+    runner = make_runner(page())
+    runner.done_when = None
+    _act_done(runner)
+    assert runner.state["status"] == "blocked"
+    assert "DONE" in runner.state["blocked_reason"]
+    assert runner.state.get("done_by") is None
+
+
+def test_model_done_the_checker_rejects_is_blocked_not_done():
+    runner = make_runner(page())
+    runner.done_when = lambda page: False
+    _act_done(runner)
+    assert runner.state["status"] == "blocked"
+    assert "DONE" in runner.state["blocked_reason"]
+
+
+def test_model_done_the_checker_confirms_is_done_by_code():
+    runner = make_runner(page())
+    runner.done_when = lambda page: True
+    _act_done(runner)
+    assert runner.state["status"] == "done"
+    assert runner.state["done_by"] == "code"
+
+
+def test_checker_can_end_the_run_without_a_model_call():
+    runner = make_runner(page())
+    runner.done_when = lambda page: True
+    runner.state["status"] = "ready"
+    runner.command("predict", {})
+    assert runner.state["status"] == "done"
+    assert runner.state["done_by"] == "code"
+    runner.decider.choose.assert_not_called()
+
+
+def test_checker_ends_the_run_after_an_ordinary_action():
+    # The decider never chooses DONE; the post-action observation
+    # satisfies the checker, so code -- not the model -- ends the run.
+    runner = make_runner(page())
+    runner.done_when = lambda page: True
+    runner.state["decision"] = decision("e3", node=20, operation="CLICK")
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert runner.state["status"] == "done"
+    assert runner.state["done_by"] == "code"
+    assert [h["action"] for h in runner.state["history"]] == ["Go"]
+
+
+def test_a_raising_checker_fails_loudly_not_silently():
+    # Upstream PR #99 swallows predicate exceptions as "not done"; a buggy
+    # checker would then masquerade as an unfinished task. The checker is
+    # caller code: its exception propagates (documented in agent.py).
+    runner = make_runner(page())
+
+    def boom(page):
+        raise RuntimeError("checker bug")
+
+    runner.done_when = boom
+    runner.state["status"] = "ready"
+    with pytest.raises(RuntimeError, match="checker bug"):
+        runner.command("predict", {})
+
+
+def test_gate_defaults_on_and_heuristic_checker_is_picked_up():
+    check = lambda page: False  # noqa: E731 -- identity is the assertion
+    decider = model.HeuristicDecider(done_when=check)
+    with loop.Agent(FIXTURE, "goal", decider=decider, text_provider=model.MappingTextProvider(FILLS)) as agent:
+        assert agent.min_confidence == 0.5  # on by default, both confidences
+        assert agent.done_when is check  # the double's checker becomes the loop's
+        assert agent.state["done_by"] is None
+
+
+@pytest.mark.parametrize("floor", [1.5, -0.1, True, float("nan"), "high"])
+def test_min_confidence_is_validated(floor):
+    decider = model.HeuristicDecider(done_when=lambda page: False)
+    with pytest.raises(ValueError, match="min_confidence"):
+        loop.Agent(
+            FIXTURE, "goal", decider=decider, text_provider=model.MappingTextProvider(FILLS), min_confidence=floor
+        )
+
+
+def test_a_non_callable_decider_checker_is_rejected_at_pickup():
+    bad = model.HeuristicDecider(done_when="yes")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="done_when must be callable"):
+        loop.Agent(FIXTURE, "goal", decider=bad, text_provider=model.MappingTextProvider(FILLS))
+
+
+def test_gate_hooks_must_be_callable():
+    decider = model.HeuristicDecider(done_when=lambda page: False)
+    with pytest.raises(TypeError, match="done_when must be callable"):
+        loop.Agent(FIXTURE, "goal", decider=decider, text_provider=model.MappingTextProvider(FILLS), done_when="yes")
+    with pytest.raises(TypeError, match="on_uncertain must be callable"):
+        loop.Agent(FIXTURE, "goal", decider=decider, text_provider=model.MappingTextProvider(FILLS), on_uncertain="yes")
 
 
 # --- upstream issue #55: both budgets are named ---------------------------

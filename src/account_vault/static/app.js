@@ -89,7 +89,7 @@ function render() {
     idle: "Ready to explore",
     ready: "Page observed · ready for a decision",
     predicted: "Choice ready · inspect or execute",
-    done: "Jev reports complete · inspect the page",
+    done: "Complete · independently verified",
     blocked: "Stopped · no supported next action",
   };
   $("status").textContent =

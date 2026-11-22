@@ -324,6 +324,10 @@ def drive_run(make_browser: Any, make_agent_parts: Any, url: str, goal: str, max
             browser=browser,
             decider=TimedDecider(decider, recorder),
             text_provider=timed_text_provider(provider, recorder),
+            # The timing wrapper hides the double's own checker from
+            # Agent's pickup; hand it over explicitly (DONE is
+            # checker-owned now, see agent._code_done).
+            done_when=getattr(decider, "done_when", None),
         )
         setup_ms = (time.perf_counter_ns() - setup_started) / 1e6
         steps: list[dict[str, Any]] = []
@@ -515,7 +519,7 @@ def _scroll_parts() -> Any:
                 return self._decision("SCROLL_DOWN", None, targets, controls, state, goal, history)
             return self._decision("BLOCKED", None, targets, controls, state, goal, history)
 
-    return ScrollDecider(), MappingTextProvider({})
+    return ScrollDecider(done_when=lambda page: "Deep done" in page["text"]), MappingTextProvider({})
 
 
 def _wait_parts() -> Any:
@@ -531,7 +535,7 @@ def _wait_parts() -> Any:
                     return self._decision("CLICK", action, targets, controls, state, goal, history)
             return self._decision("WAIT", None, targets, controls, state, goal, history)
 
-    return WaitDecider(), MappingTextProvider({})
+    return WaitDecider(done_when=lambda page: "Ready done" in page["text"]), MappingTextProvider({})
 
 
 def _combobox_parts() -> Any:
@@ -550,7 +554,10 @@ def _combobox_parts() -> Any:
                     return self._decision("TYPE_TEXT", action, targets, controls, state, goal, history)
             return self._decision("WAIT", None, targets, controls, state, goal, history)
 
-    return ComboboxDecider(), MappingTextProvider({"city": "Lis"})
+    return (
+        ComboboxDecider(done_when=lambda page: "Selected: Lisbon, Portugal" in page["text"]),
+        MappingTextProvider({"city": "Lis"}),
+    )
 
 
 def _static_browser(url: str) -> Any:

@@ -190,6 +190,8 @@ def runner():
     a.decider = Mock(validate=Mock(return_value=None))
     a.text_provider = lambda context: loop.field_text(context)
     a.min_confidence = 0.0
+    a.done_when = None
+    a.on_uncertain = None
     a.max_empty_observes = 5
     a.max_stale_decisions = 3
     a.max_cycle_repeats = 3

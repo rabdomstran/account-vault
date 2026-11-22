@@ -90,7 +90,9 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     if args.decider == "systemone":
         settings = load_settings()
-        agent = Agent(args.html, args.goal, settings=settings)
+        # The real decider's DONE is accepted only through the same
+        # independent verify() used for the final report below.
+        agent = Agent(args.html, args.goal, settings=settings, done_when=lambda page: verify(page, expect)["passed"])
     else:
         decider = HeuristicDecider(
             fill_labels=tuple(fills),

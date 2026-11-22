@@ -9,6 +9,7 @@ every deliberate difference and the upstream issue behind it.
 
 import base64
 import json
+import math
 import time
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -95,7 +96,9 @@ class Agent:
         decider: DeciderLike | None = None,
         text_provider: TextProvider | None = None,
         settings: Settings | None = None,
-        min_confidence: float = 0.0,
+        min_confidence: float = 0.5,
+        done_when: Callable[[JsonDict], bool] | None = None,
+        on_uncertain: Callable[[JsonDict], None] | None = None,
         max_empty_observes: int = 5,
         max_stale_decisions: int = 3,
         max_cycle_repeats: int = 3,
@@ -103,6 +106,23 @@ class Agent:
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
+        # Gate parameters are validated before any browser exists, so a
+        # bad policy value cannot attach a tab and then fail (validation
+        # shape from upstream PR #127). min_confidence is a routing
+        # floor, not a calibrated guarantee: 0.5 is the TypeSafe
+        # confidence-routing example value, to tune per model (ADR-001
+        # Decision 3); 0.0 disables the gate.
+        if (
+            isinstance(min_confidence, bool)
+            or not isinstance(min_confidence, (int, float))
+            or not math.isfinite(min_confidence)
+            or not 0 <= min_confidence <= 1
+        ):
+            raise ValueError("min_confidence must be a finite number between 0 and 1")
+        if done_when is not None and not callable(done_when):
+            raise TypeError("done_when must be callable")
+        if on_uncertain is not None and not callable(on_uncertain):
+            raise TypeError("on_uncertain must be callable")
         plan = [task]
         self.pending_text: tuple[tuple[Any, str], str, JsonDict] | None = None
         self.settings = settings or load_settings()
@@ -112,6 +132,25 @@ class Agent:
         # choose()/field_text(), so the loop cannot run without Chrome plus
         # hosted API keys. Defaults preserve upstream behaviour for http(s)
         # URLs (CDP + SystemOne wire + OpenAI-compatible text helper).
+        self.decider: DeciderLike = decider or SystemOneDecider(self.settings)
+        # DEVIATION: code owns completion (upstream PR #99's done_when,
+        # authoritative here per ADR-001 Decision 1: "DONE still requires
+        # independent outcome verification"). An explicit checker wins;
+        # otherwise the offline double's own checker is adopted when the
+        # decider instance carries one (HeuristicDecider.done_when --
+        # instance dict only, so a Mock's auto-attributes never qualify).
+        # With no checker anywhere, a model DONE ends blocked, never done
+        # (see _code_done / act). Resolved before the browser exists so a
+        # non-callable checker cannot leak an attached tab.
+        try:
+            decider_checker = vars(self.decider).get("done_when")
+        except TypeError:  # decider without an instance dict carries no checker
+            decider_checker = None
+        resolved_done_when = done_when if done_when is not None else decider_checker
+        if resolved_done_when is not None and not callable(resolved_done_when):
+            raise TypeError("done_when must be callable")
+        self.done_when: Callable[[JsonDict], bool] | None = resolved_done_when
+        self.on_uncertain = on_uncertain
         self.browser: BrowserLike
         if browser is not None:
             self.browser = browser
@@ -119,11 +158,10 @@ class Agent:
             self.browser = StaticBrowser(url)
         else:
             self.browser = CdpBrowser(url)
-        self.decider: DeciderLike = decider or SystemOneDecider(self.settings)
         self.text_provider: TextProvider = text_provider or (
             lambda context: field_text(context, settings=self.settings)
         )
-        self.min_confidence = min_confidence
+        self.min_confidence = float(min_confidence)
         self.max_empty_observes = max_empty_observes
         self.max_stale_decisions = max_stale_decisions
         self.max_cycle_repeats = max_cycle_repeats
@@ -165,6 +203,10 @@ class Agent:
             # for one decision on that source page (#247).
             cycle_suppressed=[],
             blocked_reason=None,
+            # Who ended the run as done: "code" (the done_when checker)
+            # or None. There is deliberately no "model" value -- a model
+            # DONE the checker does not confirm never reaches done.
+            done_by=None,
             elapsed_ms=0,
             started_at=None,
             record=bool(self.record_dir),
@@ -194,6 +236,36 @@ class Agent:
             page = self.browser.observe(screenshot=self.screenshots)
             attempts += 1
         return page
+
+    def _code_done(self) -> bool:
+        """End the run done iff the caller's independent checker passes.
+
+        DEVIATION: upstream accepts the model's DONE after only a
+        freshness check and leaves verification to each example;
+        upstream PR #99 adds done_when as an *additional* completion
+        path but still trusts a confident model DONE. Here the checker
+        is the only route to "done" (ADR-001 Decision 1): it is asked
+        in predict and after every executed action, so code can end
+        the run even when the model never chooses DONE (PR #99's
+        BLOCKED-after-arrival case), and act accepts a model DONE only
+        through this same check. Checker exceptions propagate --
+        PR #99 swallows them as "not done", which would let a buggy
+        checker masquerade as an unfinished task; the checker is
+        caller code and must fail loudly. It receives the observed
+        page dict and must be pure (no browser mutation, no I/O waits).
+        """
+        checker = getattr(self, "done_when", None)
+        state = self.state
+        if checker is None or state["status"] in {"done", "blocked"}:
+            return False
+        if not checker(state["page"]):
+            return False
+        state["status"] = "done"
+        state["plan_index"] = 1
+        state["done_by"] = "code"
+        state["decision"] = None
+        state["elapsed_ms"] = self._elapsed(state)
+        return True
 
     def _refresh(self) -> None:
         """Re-observe, keeping no-op exclusions only on an identical page.
@@ -309,6 +381,11 @@ class Agent:
             if not state["browser"].fresh(state["page"]):
                 self._refresh()
             state["decision"] = None
+            # Code-owned completion is checked before spending a model
+            # call: a task already satisfied on the observed page ends
+            # here even if the model would keep acting (or BLOCKED).
+            if self._code_done():
+                return self.snapshot()
             if state["status"] in {"done", "blocked"}:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             # DEVIATION: named budget. Upstream's `MAX_STEPS * 2` is
@@ -340,22 +417,55 @@ class Agent:
                     "elapsed_ms": self._elapsed(state),
                 }
             )
-            # DEVIATION: optional confidence gate for ordinary actions.
-            # Upstream records confidence but executes whatever was chosen,
-            # however unsure the model was (upstream issue #120). With
-            # min_confidence > 0, a below-threshold decision is not acted
-            # on: re-observe once (the page may still be settling), and stop
-            # as blocked if the model is still unsure. Default 0.0 keeps
-            # upstream behaviour; ADR-001's escalation hook plugs in here.
-            if (
-                self.min_confidence > 0
-                and decision["operation"] not in {"DONE", "BLOCKED"}
-                and decision["confidence"] < self.min_confidence
-            ):
+            # DEVIATION: confidence gate for ordinary actions (upstream
+            # issue #120; ADR-001 Decision 3). Upstream records confidence
+            # but executes whatever was chosen, however unsure the model
+            # was. The floor applies to BOTH the operation confidence and
+            # the selected target's confidence when a target head ran
+            # (upstream PR #127 gates both the same way; the first local
+            # cut read only "confidence", leaving target_confidence
+            # recorded-but-unused and the default off, i.e. shipped
+            # effect zero). A below-floor decision is not acted on:
+            # re-observe once (the page may still be settling), then stop
+            # as blocked with the reason named and on_uncertain notified
+            # -- ADR-001's optional hosted re-ask belongs to that caller
+            # hook, never an automatic second call from the loop (vault
+            # state must not leave the machine by default). Terminal
+            # operations skip the gate: DONE is governed by the checker
+            # in act, BLOCKED is already the model's stop. Injected
+            # decisions without a target_confidence key gate on the
+            # operation alone; min_confidence=0.0 disables the gate.
+            failed_confidences: list[str] = []
+            if self.min_confidence > 0 and decision["operation"] not in {"DONE", "BLOCKED"}:
+                if decision["confidence"] < self.min_confidence:
+                    failed_confidences.append("operation")
+                target_confidence = decision.get("target_confidence")
+                if target_confidence is not None and target_confidence < self.min_confidence:
+                    failed_confidences.append("target")
+            if failed_confidences:
                 self._low_confidence_reobserves += 1
                 if self._low_confidence_reobserves >= 2:
                     state["status"] = "blocked"
+                    state["blocked_reason"] = (
+                        f"Decision confidence below the {self.min_confidence} floor "
+                        f"({', '.join(failed_confidences)}) after re-observing; nothing executed"
+                    )
                     state["elapsed_ms"] = self._elapsed(state)
+                    on_uncertain = getattr(self, "on_uncertain", None)
+                    if on_uncertain is not None:
+                        on_uncertain(
+                            {
+                                "reason": "below_confidence_floor",
+                                "failed_confidences": failed_confidences,
+                                "executed": False,
+                                "operation": decision["operation"],
+                                "choice": decision["choice"],
+                                "target": decision.get("target"),
+                                "confidence": decision["confidence"],
+                                "target_confidence": decision.get("target_confidence"),
+                                "min_confidence": self.min_confidence,
+                            }
+                        )
                 else:
                     self._refresh()
                     state["status"] = "ready"
@@ -375,8 +485,27 @@ class Agent:
                 if not state["browser"].fresh(page):
                     state["status"] = "ready"
                     raise StalePage("Page changed since the decision. Choose again.")
-                state["status"] = "done" if selected == "DONE" else "blocked"
-                state["plan_index"] = int(selected == "DONE")
+                if selected == "DONE":
+                    # DEVIATION: the model's DONE is a claim, not evidence
+                    # (ADR-001 Decision 1; upstream README states the same
+                    # rule and leaves it to examples). It is accepted only
+                    # through the independent checker; an unconfirmed DONE
+                    # -- or any DONE with no checker configured -- ends
+                    # blocked as unverified, never done, so a confident
+                    # false DONE cannot be reported as success.
+                    if self._code_done():
+                        return self.snapshot()
+                    state["status"] = "blocked"
+                    state["blocked_reason"] = (
+                        "DONE without independent verification: no done_when checker is configured; "
+                        "the model's DONE is not evidence of success"
+                        if getattr(self, "done_when", None) is None
+                        else "DONE rejected: the independent done_when check did not pass on the observed page"
+                    )
+                    state["elapsed_ms"] = self._elapsed(state)
+                    return self.snapshot()
+                state["status"] = "blocked"
+                state["plan_index"] = 0
                 state["elapsed_ms"] = self._elapsed(state)
                 return self.snapshot()
             # DEVIATION: resolve by id AND stable node. Upstream resolves by
@@ -477,6 +606,11 @@ class Agent:
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])
                 )
+            # Code-owned completion wins over the no-progress stops
+            # below: the executed action satisfied the independent
+            # checker, so the run is done however the page-diff looks.
+            if self._code_done():
+                return self.snapshot()
             last = state["history"][-1]
             # DEVIATION: give a no-op action its turn back (upstream PR
             # #209; #67's fork does the same after 2 tries, #245 for
