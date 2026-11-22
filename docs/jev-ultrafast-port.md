@@ -186,6 +186,25 @@ the live gate would produce it). Whatever lands must keep the
 deep-scroll live test green on Linux — that test is the wait's
 reason to exist.
 
+**Outcome (2026-11-22): the early exit landed** in the narrowed
+form a wider research pass supported — direction-aware,
+root-scroller-only, snapshot's 2 px gate, two consecutive stable
+at-limit polls, pinch-zoom and growing pages fall through to
+the full 3 s, movement exits unchanged (`SCROLL_POLL` in
+browser.py, DEVIATION comment there; that research also
+established that neither #212 nor #209 — both still unmerged —
+discusses commit timing at all, that no tracker item proposes
+an executor-side boundary exit, and that every surveyed
+automation project's wheel is fire-and-forget, so this remains
+port-local ground). Measured on the same harness setup:
+boundary observe p50 **3,076 → 108 ms**; moving-scroll and
+ordinary loop step p50s unchanged, as predicted (the snapshot
+never offers a boundary scroll). Remaining full-deadline case:
+a wheel swallowed by a nested scroller while the root viewport
+could still move — unprovable from root offsets, kept
+deliberately. Numbers and method in
+[latency-results.md](latency-results.md).
+
 ## Verification (2026-11-21)
 
 ```bash

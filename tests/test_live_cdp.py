@@ -472,6 +472,32 @@ document.getElementById('status').textContent='Deep done'">Deep target</button>
 <p id="status">pending</p><script>window.__clicks=[]</script>"""
 
 
+def test_live_boundary_scroll_exits_without_paying_the_deadline(dedicated_chrome):
+    # Provable-boundary early exit (docs/latency-results.md): at the
+    # bottom no commit can follow, so observe must return in well
+    # under SCROLL_SETTLE_TIMEOUT (3s) instead of polling it out.
+    from urllib.parse import quote
+
+    from account_vault.browser import CdpBrowser
+
+    browser = CdpBrowser("data:text/html," + quote(TALL_HTML))
+    try:
+        page = browser.observe(screenshot=False)
+        while any(a.get("id") == "scroll_down" for a in page["actions"]):
+            down = next(a for a in page["actions"] if a.get("id") == "scroll_down")
+            browser.act(down, page)
+            page = browser.observe(screenshot=False)
+        stuck = {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560}
+        browser.act(stuck, page)
+        started = time.perf_counter()
+        page = browser.observe(screenshot=False)
+        waited_ms = (time.perf_counter() - started) * 1000
+        assert waited_ms < 1500, f"boundary observe took {waited_ms:.0f} ms"
+        assert not any(a.get("id") == "scroll_down" for a in page["actions"])
+    finally:
+        browser.close()
+
+
 def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome):
     from urllib.parse import quote
 

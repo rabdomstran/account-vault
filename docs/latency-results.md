@@ -8,7 +8,9 @@
 - **Raw data:** [latency-measurement.json](latency-measurement.json)
   (every run, every tick; summaries below are computed from it);
   settle-paths follow-up in
-  [latency-measurement-settle.json](latency-measurement-settle.json)
+  [latency-measurement-settle.json](latency-measurement-settle.json);
+  boundary-exit follow-up in
+  [latency-measurement-boundary.json](latency-measurement-boundary.json)
 - **Compared against:** upstream
   [docs/performance.md](https://github.com/browser-use/jev-ultrafast/blob/main/docs/performance.md)
   with its `flights-measurement.json` / `full-speed-measurement.json`,
@@ -350,6 +352,55 @@ terms to quote per step are now: click/fill ≈33 ms, scroll
 ≈50 ms (3,076 ms at a boundary, once), wait ≈112 ms, combobox
 fill ≈ suggestion delay + ~30 ms up to the 208 ms cap — plus
 whatever the decider costs.
+
+### Boundary early exit, implemented (same day)
+
+Follow-up research before implementing (upstream tracker +
+external projects + CDP/Chromium primaries) narrowed the shape:
+#212/#209 (both still unmerged) prove scroll progress only
+post-hoc and contain no commit-timing discussion at all; an
+80-item tracker search found boundary logic only at offer-time
+or decision-time, never in an executor wait (closest: withdrawn
+#196's remaining-distance test); every surveyed automation
+project's wheel is fire-and-forget (Playwright documents it
+verbatim) with "finished" proven element-centrically, never by
+offset polling; and CDP `dispatchMouseEvent` resolves on ACK
+before DOM dispatch, so an at-limit exit can only ever claim
+"cannot move further that way", never "this wheel committed" —
+which is sufficient, because at the limit no scroll/scrollend
+event will ever arrive to prove more.
+
+Implemented in that narrowed form (`SCROLL_POLL` in
+browser.py): each poll atomically reads
+`[scrollY, scrollHeight − innerHeight, visualViewport.scale]`;
+two consecutive polls at the directional limit (snapshot.js's
+own 2 px offer gate; `y ≤ 0` upward) end the wait early.
+Pinch-zoom (scale ≠ 1), a growing page between polls, and every
+not-at-limit state keep the full 3 s deadline, and movement
+exits exactly as before. Pinned at the fake-CDP seam (hit,
+direction, two-poll stability, growth revocation, zoom
+fall-through) and live (boundary observe well under the
+deadline; deep-scroll loop unchanged).
+
+Same-setup harness, before → after
+([latency-measurement-boundary.json](latency-measurement-boundary.json);
+before = unmodified `main` re-run the same day):
+
+| Metric | Before | After |
+|---|---:|---:|
+| boundary scroll observe wall p50 (n=5) | 3,076 ms | **108 ms** |
+| moving scroll settle p50 (n=24) | 34.0 ms | 34.1 ms |
+| cdp-scroll loop step p50 (n=75) | 49.51 ms | 49.85 ms |
+| cdp-catalog / fixture step p50 | 33.4 / 33.3 ms | 33.5 / 33.4 ms |
+
+The loop rows are expectedly flat: the snapshot never offers a
+boundary scroll, so ordinary runs never paid the deadline; the
+saving lands exactly where the cost was — boundary probes and
+unoffered scroll dispatches now cost ~108 ms (settle promise +
+two polls + snapshot) instead of ~3.08 s. What remains at the
+full deadline, deliberately: a wheel swallowed by a nested
+scroller while the root viewport could still move (unprovable
+from root offsets), and any commit later than 3 s.
 
 ## Limits — what this does not show
 
