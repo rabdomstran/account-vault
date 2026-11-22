@@ -234,6 +234,36 @@ def test_field_context_tells_the_helper_the_native_value_format():
     assert "required_format" not in model.field_context("g", text, p, [])["field"]
 
 
+def test_native_fill_taxonomy_agrees_across_layers():
+    # The native-fill type list is declared once per layer that cannot
+    # import the others: browser.NATIVE_FILL_TYPES (executor; act.js gets
+    # its list generated from it), model._NATIVE_FORMATS (helper prompt),
+    # snapshot.js role() (enumeration), static_dom (offline twin). Adding
+    # a type to one and not the others silently reopens #227 for that
+    # type; pin the four spellings to the same set.
+    from pathlib import Path
+
+    from account_vault import model as model_module
+    from account_vault.browser import NATIVE_FILL_TYPES
+    from account_vault.static_dom import valid_native_value
+
+    assert set(model_module._NATIVE_FORMATS) == set(NATIVE_FILL_TYPES)
+    snapshot_js = (Path(model_module.__file__).parent / "snapshot.js").read_text(encoding="utf-8")
+    canonical = {
+        "date": "2027-03-01",
+        "datetime-local": "2027-03-01T09:30",
+        "time": "09:30",
+        "month": "2027-03",
+        "week": "2027-W09",
+        "color": "#1a73e8",
+        "range": "42",
+    }
+    assert set(canonical) == set(NATIVE_FILL_TYPES)
+    for input_type, sample in canonical.items():
+        assert f"'{input_type}'" in snapshot_js, input_type
+        assert valid_native_value(input_type, sample), input_type
+
+
 def test_cached_text_is_not_reused_for_a_different_node(monkeypatch):
     actions = [
         {"id": "e1", "kind": "fill", "label": "Street Address", "role": "textbox", "value": "", "node": 41},
@@ -515,7 +545,7 @@ def test_gate_hooks_must_be_callable():
 
 
 def test_model_call_budget_error_names_the_limit():
-    from account_vault.questions import MAX_DECISIONS
+    from account_vault.agent import MAX_DECISIONS
 
     p = page()
     runner = make_runner(p)
@@ -633,7 +663,7 @@ def test_run_ends_blocked_at_decision_budget_without_raising():
     # Command-level predict still raises (pinned above, #55), but run() —
     # the drive-to-completion API — must land on the terminal "blocked"
     # state instead of leaking the budget error as a traceback.
-    from account_vault.questions import MAX_DECISIONS
+    from account_vault.agent import MAX_DECISIONS
 
     p = page()
     runner = make_runner(p)
