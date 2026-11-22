@@ -22,7 +22,7 @@ runs end to end against a static HTML file today:
 ```bash
 uv run python -m account_vault   # offline demo on examples/hotel_search.html
 uv run account-vault-demo        # inspector UI on http://127.0.0.1:8766 (offline mode default)
-uv run pytest                    # 142 tests, no API keys (7 live-CDP tests opt-in locally; CI gates on them headless)
+uv run pytest                    # 200 passed, 10 skipped, no API keys (live-CDP tests opt-in locally; CI gates on them headless)
 uv run python scripts/e2e_offline_demo.py  # end-to-end: CLI demo + inspector over HTTP
 ACCOUNT_VAULT_LIVE=1 uv run pytest tests/test_live_cdp.py  # real Chrome, dedicated profile
 ```
@@ -128,7 +128,8 @@ docs/adr-001-model-choice.md   # decide-model decision (read this first)
 docs/jev-ultrafast-port.md     # what was ported, upstream issues, deviations
 pyproject.toml                 # metadata, dependencies, tool config
 .env.example                   # backend + text-model settings template
-src/account_vault/             # agent loop (agent/model/browser/snapshot.js)
+src/account_vault/             # agent loop (agent/model/browser + in-page JS:
+                               # snapshot.js, act.js, settle.js)
                                # + offline static_dom backend, settings,
                                # inspector demo (demo.py + static/: upstream
                                # JS fixture + static-rendered catalog twin)
@@ -206,6 +207,7 @@ selected by environment variable (ADR-001, Decision §2):
 | Variable | Meaning |
 | --- | --- |
 | `SYSTEMONE_BASE_URL` | Local vLLM server (`http://127.0.0.1:8000`) by default; `https://api.typesafe.ai` for hosted Jev |
+| `SYSTEMONE_PATH` | Decide endpoint path on that server (`/v1/systemone` by default) |
 | `SYSTEMONE_MODEL` | `d1-2B` locally; Jev model id when hosted |
 | `SYSTEMONE_API_KEY` | Hosted API key (empty for local) |
 | `TEXT_MODEL_BASE_URL` / `TEXT_MODEL` / `TEXT_MODEL_API_KEY` | Small OpenAI-compatible model used only for `TYPE_TEXT` (defaults: OpenRouter, `inception/mercury-2.5`) |
@@ -247,9 +249,14 @@ then warns instead of refusing.
 
 ```bash
 source .venv/bin/activate   # or prefix each command with `uv run`
-ruff check src              # lint (line-length 120; rules E, F, I)
+ruff check .                # lint (line-length 120; rules E, F, I)
+ruff format --check .       # formatting (`ruff format .` to apply)
+mypy                        # strict over src/account_vault
 pytest                      # tests (testpaths = tests/)
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full gate list (coverage
+floor, e2e, build, and the opt-in live-Chrome run).
 
 ## License
 

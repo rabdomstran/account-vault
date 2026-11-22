@@ -75,6 +75,8 @@ jobs:
           uv run --no-project python scripts/check_dist_assets.py
           uv pip install --no-deps --target /tmp/wheel-check dist/*.whl
           test -f /tmp/wheel-check/account_vault/snapshot.js
+          test -f /tmp/wheel-check/account_vault/act.js
+          test -f /tmp/wheel-check/account_vault/settle.js
           test -f /tmp/wheel-check/account_vault/static/index.html
           uv run --no-project --with twine twine check dist/*
 

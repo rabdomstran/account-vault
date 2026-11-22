@@ -11,7 +11,10 @@ HTML with the standard library and mutating an in-memory DOM.
 Semantics intentionally mirror snapshot.js, including this port's coverage
 fixes (date/time/range inputs, bare contenteditable, [onclick] rows and
 the #23 second pass -- pointer rows, icon-only controls, concealed-input
-label proxies -- are all enumerated; select execution uses option_index). Interactive behaviour is
+label proxies -- are all enumerated; select execution uses option_index).
+Where they are specified to differ (stylesheets, layout, occlusion,
+scripts) and the parity invariant that is tested instead:
+docs/static-live-parity.md. Interactive behaviour is
 limited to what static fixtures need: fill, check/radio, select, in-page
 anchors, relative-file navigation, and revealing a hidden results region on
 submit (see _submit). There is no JavaScript execution; a fixture that
@@ -28,27 +31,12 @@ from pathlib import Path
 from typing import Any, overload
 from urllib.parse import unquote, urlparse
 
-from .browser import NATIVE_FILL_TYPES, StalePage, fingerprint
+from .browser import EDITABLE_ROLES, ELEMENT_ROLES, NATIVE_FILL_TYPES, SAFE_EXCLUDE, StalePage, fingerprint
 
 VOID = {"input", "br", "img", "hr", "meta", "link", "area", "base", "col", "embed", "source", "track", "wbr"}
-ROLES = {
-    "button",
-    "link",
-    "checkbox",
-    "radio",
-    "switch",
-    "tab",
-    "menuitem",
-    "menuitemradio",
-    "option",
-    "gridcell",
-    "combobox",
-    "textbox",
-    "searchbox",
-    "spinbutton",
-    "slider",
-}
-SAFE_EXCLUDE = {"password", "file", "hidden"}
+# Shared with snapshot.js via browser.py (generated into the JS at load);
+# see docs/static-live-parity.md.
+ROLES = frozenset(ELEMENT_ROLES)
 
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 _MONTH_RE = re.compile(r"(\d{4})-(\d{2})\Z")
@@ -256,6 +244,18 @@ class StaticBrowser:
 
     def _options(self, select: Element) -> list[Element]:
         return [e for e in self._walk(select) if e.tag == "option"]
+
+    def _option_disabled(self, option: Element) -> bool:
+        # Mirror snapshot.js/act.js: an option is unofferable when it or
+        # its <optgroup> is disabled (o.closest('optgroup[disabled]')).
+        if "disabled" in option.attrs:
+            return True
+        current = option.parent
+        while current is not None and current.tag not in {"select", "#root"}:
+            if current.tag == "optgroup" and "disabled" in current.attrs:
+                return True
+            current = current.parent
+        return False
 
     # -- perception helpers (mirror snapshot.js) ---------------------------
 
@@ -471,6 +471,11 @@ class StaticBrowser:
             if options and 0 <= selected < len(options):
                 return options[selected].get("value", options[selected].inner_text())
             return ""
+        # Browser default: a checkbox/radio with no value attribute has
+        # value "on" (what snapshot.js reads from e.value); every other
+        # control defaults to empty.
+        if element.tag == "input" and element.get("type", "").lower() in {"checkbox", "radio"}:
+            return element.get("value", "on")
         return element.get("value", "")
 
     def _scope_text(self, element: Element) -> str:
@@ -554,7 +559,7 @@ class StaticBrowser:
                 selected = element.selected_index
                 current = options[selected].inner_text() if options and selected is not None and selected >= 0 else ""
                 for option_index, option in enumerate(options):
-                    if option_index == element.selected_index or "disabled" in option.attrs:
+                    if option_index == element.selected_index or self._option_disabled(option):
                         continue
                     actions.append(
                         {
@@ -570,10 +575,7 @@ class StaticBrowser:
                 editable = (
                     "readonly" not in element.attrs
                     and element.get("aria-readonly") != "true"
-                    and (
-                        role in {"textbox", "searchbox", "spinbutton", "slider"}
-                        or (role == "combobox" and element.tag in {"input", "textarea"})
-                    )
+                    and (role in EDITABLE_ROLES or (role == "combobox" and element.tag in {"input", "textarea"}))
                 )
                 value = self._value(element)
                 actions.append({**base, "kind": "fill" if editable else "click", "value": value})
@@ -798,7 +800,7 @@ class StaticBrowser:
             # first-value-match.
             options = self._options(element)
             index = action.get("option_index")
-            if not isinstance(index, int) or not (0 <= index < len(options)) or "disabled" in options[index].attrs:
+            if not isinstance(index, int) or not (0 <= index < len(options)) or self._option_disabled(options[index]):
                 raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
             element.selected_index = index
         elif kind == "click":

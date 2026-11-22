@@ -192,6 +192,25 @@ def test_duplicate_valued_option_selects_by_index():
     assert guests["current_value"] == "1 guest (promo)"
 
 
+def test_disabled_optgroup_options_are_not_offered():
+    # Parity with snapshot.js/act.js (o.closest('optgroup[disabled]')):
+    # found by the live/static parity test -- static offered "Nine",
+    # live never did (docs/static-live-parity.md).
+    markup = """<html><head><title>t</title></head><body>
+      <label>Guests <select>
+        <option value="1" selected>One</option>
+        <optgroup label="Group" disabled><option value="9">Nine</option></optgroup>
+        <option value="2">Two</option>
+      </select></label>
+    </body></html>"""
+    browser = StaticBrowser.from_html(markup)
+    page = browser.observe()
+    assert labels(page) == ["Guests → Two", "Wait for the page to update"]
+    nine = {"kind": "select", "node": page["actions"][0]["node"], "id": "e9", "option_index": 1}
+    with pytest.raises(RuntimeError, match="not confirmed"):
+        browser.act(nine, page)
+
+
 def test_password_and_hidden_inputs_stay_out_of_the_table():
     markup = """<html><head><title>t</title></head><body>
       <label>Secret <input type="password"></label>

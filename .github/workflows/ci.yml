@@ -107,8 +107,8 @@ jobs:
         run: uv sync --locked --dev
 
       # -rs: print skip reasons so it is visible in the log that the
-      # only skipped tests are the opt-in live-CDP pair.
-      # Coverage floor: suite measures 90% (browser.py 99%, __main__
+      # only skipped tests are the opt-in live-CDP tests.
+      # Coverage floor: suite measures 92% (browser.py 97%, __main__
       # 100%; remaining gaps are mostly demo.py and model.py edge
       # paths). 89 is the regression floor, not an aspiration.
       - name: Test with coverage
@@ -137,20 +137,22 @@ jobs:
       - name: Build sdist and wheel
         run: uv build
 
-      # The inspector and static browser load non-Python files from the
-      # package directory at runtime (static/, snapshot.js). Guard the
-      # packaging: every non-.py package file must ship in both
-      # distributions (scripts/check_dist_assets.py, shared with the
-      # release workflow).
+      # The inspector, static browser, and CDP backend load non-Python
+      # files from the package directory at runtime (static/ plus the
+      # in-page JS: snapshot.js, act.js, settle.js). Guard the packaging:
+      # every non-.py package file must ship in both distributions
+      # (scripts/check_dist_assets.py, shared with the release workflow).
       - name: Verify package assets ship in both distributions
         run: uv run --no-project python scripts/check_dist_assets.py
 
       # And the wheel must actually install with assets on disk where
-      # demo.py/static_dom.py look for them (package-relative paths).
+      # browser.py/demo.py look for them (package-relative paths).
       - name: Verify wheel installs with assets in place
         run: |
           uv pip install --no-deps --target /tmp/wheel-check dist/*.whl
           test -f /tmp/wheel-check/account_vault/snapshot.js
+          test -f /tmp/wheel-check/account_vault/act.js
+          test -f /tmp/wheel-check/account_vault/settle.js
           test -f /tmp/wheel-check/account_vault/static/index.html
           test -f /tmp/wheel-check/account_vault/static/app.js
           test -f /tmp/wheel-check/account_vault/static/style.css

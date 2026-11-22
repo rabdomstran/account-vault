@@ -264,6 +264,24 @@ def test_native_fill_taxonomy_agrees_across_layers():
         assert valid_native_value(input_type, sample), input_type
 
 
+def test_perception_tables_are_generated_from_one_source():
+    # Roles / excluded types / editable roles are declared once in
+    # browser.py: snapshot.js receives them via __TOKENS__ at load and
+    # static_dom imports them. A table re-spelled in the JS, or a token
+    # left unreplaced, reopens static/live drift (docs/static-live-parity.md).
+    from account_vault import browser as browser_module
+    from account_vault import static_dom
+
+    for token in ("__ELEMENT_ROLES__", "__SAFE_EXCLUDE__", "__EDITABLE_ROLES__"):
+        assert token not in browser_module.READ_STATE
+    for role in browser_module.ELEMENT_ROLES:
+        assert f"'{role}'" in browser_module.READ_STATE
+    for excluded in browser_module.SAFE_EXCLUDE:
+        assert f"'{excluded}'" in browser_module.READ_STATE
+    assert static_dom.ROLES == frozenset(browser_module.ELEMENT_ROLES)
+    assert static_dom.SAFE_EXCLUDE is browser_module.SAFE_EXCLUDE
+
+
 def test_cached_text_is_not_reused_for_a_different_node(monkeypatch):
     actions = [
         {"id": "e1", "kind": "fill", "label": "Street Address", "role": "textbox", "value": "", "node": 41},

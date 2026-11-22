@@ -13,7 +13,7 @@ import math
 import time
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, Protocol, Self
+from typing import Any, Protocol, Self, TypedDict
 
 from .browser import CdpBrowser, CoveredTarget, StalePage
 from .model import JsonDict, MissingValueError, SystemOneDecider, action_space, field_context, field_text
@@ -55,6 +55,36 @@ class DeciderLike(Protocol):
 
 
 TextProvider = Callable[[JsonDict], tuple[str, JsonDict]]
+
+
+class AgentState(TypedDict):
+    """The run state snapshot() exposes (minus ``browser``).
+
+    Runtime shape is unchanged -- a plain dict, exactly as upstream --
+    but the keys and value types are now checked where the loop writes
+    them. Every key is established in ``Agent.__init__``; external code
+    (demo, __main__, tests) keeps seeing the same dict through
+    snapshot() and ``agent.state``.
+    """
+
+    browser: BrowserLike
+    goal: str
+    page: JsonDict
+    decision: JsonDict | None
+    history: list[JsonDict]
+    status: str
+    plan: list[str]
+    plan_index: int
+    decisions: list[JsonDict]
+    text_calls: list[JsonDict]
+    stale_streak: int
+    no_progress: list[Any]
+    cycle_suppressed: list[JsonDict]
+    blocked_reason: str | None
+    done_by: str | None
+    elapsed_ms: int
+    started_at: float | None
+    record: bool
 
 
 def _count_elements(page: JsonDict) -> int:
@@ -201,33 +231,33 @@ class Agent:
         except Exception:
             self.browser.close()
             raise
-        self.state: JsonDict = dict(
-            browser=self.browser,
-            goal="\n".join(plan),
-            page=page,
-            decision=None,
-            history=[],
-            status="ready",
-            plan=plan,
-            plan_index=0,
-            decisions=[],
-            text_calls=[],
-            stale_streak=0,
+        self.state: AgentState = {
+            "browser": self.browser,
+            "goal": "\n".join(plan),
+            "page": page,
+            "decision": None,
+            "history": [],
+            "status": "ready",
+            "plan": plan,
+            "plan_index": 0,
+            "decisions": [],
+            "text_calls": [],
+            "stale_streak": 0,
             # Action ids that left this exact page unchanged, dropped
             # from the next offer while the fingerprint holds (#209).
-            no_progress=[],
+            "no_progress": [],
             # (from_url, kind, label) transitions seen twice, dropped
             # for one decision on that source page (#247).
-            cycle_suppressed=[],
-            blocked_reason=None,
+            "cycle_suppressed": [],
+            "blocked_reason": None,
             # Who ended the run as done: "code" (the done_when checker)
             # or None. There is deliberately no "model" value -- a model
             # DONE the checker does not confirm never reaches done.
-            done_by=None,
-            elapsed_ms=0,
-            started_at=None,
-            record=bool(self.record_dir),
-        )
+            "done_by": None,
+            "elapsed_ms": 0,
+            "started_at": None,
+            "record": bool(self.record_dir),
+        }
         if self.record_dir:
             self.record_dir.mkdir(parents=True, exist_ok=True)
             self._record_screenshot(page, "000000.jpg")
@@ -329,7 +359,7 @@ class Agent:
             "elements": action_space(self._offered_page()["actions"])[0],
         }
 
-    def _elapsed(self, state: JsonDict) -> int:
+    def _elapsed(self, state: AgentState) -> int:
         if state["started_at"] is None:
             return int(state["elapsed_ms"])
         return int(round((time.perf_counter() - state["started_at"]) * 1000))
