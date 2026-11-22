@@ -123,7 +123,7 @@ jobs:
         env:
           XDIST: ${{ matrix.os == 'macos-latest' && '-n auto' || '' }}
         run: >-
-          uv run pytest -rs $XDIST
+          uv run pytest -rs --durations=15 $XDIST
           --cov=account_vault
           --cov-report=term-missing
           --cov-fail-under=89
