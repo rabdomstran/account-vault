@@ -27,6 +27,13 @@
     const r=e.getBoundingClientRect();
     return r.width<=0 || r.height<=0 || !visible(e);
   };
+  // The element's rect and viewport centre, or null when the centre cannot
+  // be hit (no box of its own, or outside the viewport). One spelling for
+  // the three collection passes below.
+  const centered = e => {
+    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+    return !r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight ? null : {r,x,y};
+  };
   const name = (e,seen=new Set()) => {
     if (!e || seen.has(e)) return '';
     seen.add(e);
@@ -44,8 +51,17 @@
         n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ').trim()) ||
       e.getAttribute('title') || e.getAttribute('placeholder') || '';
   };
+  // DEVIATION: 'slider' closes the list (upstream's ends at 'spinbutton')
+  // so role="slider" widgets and range inputs (#215/#227, in role below)
+  // reach the table; slider is fillable in the editable test below.
   const roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio',
     'option','gridcell','combobox','textbox','searchbox','spinbutton','slider'];
+  // Two scope texts, close but deliberately not the same: the guard's
+  // (upstream's selectors, part of freshness semantics) vs the scope copy
+  // carried on each action for field_context, which adds fieldset so
+  // grouped same-labeled fields disambiguate (#198/#202).
+  const GUARD_SCOPE='form,dialog,[role="dialog"],article,li,tr,[role="row"]';
+  const ACTION_SCOPE='form,fieldset,dialog,[role="dialog"],article,li,tr,[role="row"]';
   // DEVIATION: upstream matches only [contenteditable="true"], so bare
   // `contenteditable` and `contenteditable=""` (both editable per HTML spec,
   // as is "plaintext-only") are never enumerated (upstream issue #218).
@@ -98,7 +114,7 @@
       .map(e=>[identity(e),e.value,e.checked,e.selectedIndex,e.disabled,e.readOnly])];
   cache.guard=e=>{
     if (!e?.isConnected || !visible(e)) return null;
-    const scope=e.closest('form,dialog,[role="dialog"],article,li,tr,[role="row"]') || e.parentElement;
+    const scope=e.closest(GUARD_SCOPE) || e.parentElement;
     return [identity(e),role(e),name(e),e.value??null,e.checked??null,e.selectedIndex??null,
       e.readOnly??null,e.matches(':disabled'),e.getAttribute('aria-disabled'),
       e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
@@ -108,14 +124,15 @@
   const collected=new Set(), collectedEls=new Set();
   for (const e of document.querySelectorAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
-    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
-    if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    const hit=centered(e), rname=role(e);
+    if (!rname || !hit) continue;
+    const {r}=hit;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     // DEVIATION: carry DOM identity hints (id/name/placeholder/input_type and
     // nearest scope text) so field_context can distinguish same-labeled
-    // fields (upstream issues #198, #202). Guard scope text already exists;
-    // this only mirrors a bounded copy onto the action itself.
-    const scopeEl=e.closest('form,fieldset,dialog,[role="dialog"],article,li,tr,[role="row"]');
+    // fields (upstream issues #198, #202). Like the guard's scope text but
+    // a shorter copy (600 chars, ACTION_SCOPE) on the action itself.
+    const scopeEl=e.closest(ACTION_SCOPE);
     const base={node:identity(e),role:rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     collected.add(base.node); collectedEls.add(e);
@@ -195,8 +212,9 @@
     if (!safe(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]') || !concealed(e)) continue;
     const label=[...(e.labels||[])].find(l=>visible(l) && !l.closest('[aria-disabled="true"]'));
     if (!label) continue;
-    const r=label.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
-    if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    const hit=centered(label);
+    if (!hit) continue;
+    const {r}=hit;
     const node=identity(label);
     if (collected.has(node)) continue;
     collected.add(node); collectedEls.add(label);
@@ -216,8 +234,7 @@
     const strong=typeof e.onclick==='function' || e.tabIndex>=0 ||
       e.hasAttribute('data-clickable') || e.hasAttribute('data-action');
     if (!pointer && !strong) continue;
-    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
-    if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    if (!centered(e)) continue;
     const icon=iconName(e), label=name(e).trim().slice(0,120) || icon;
     if (!label) continue;
     const list=pointerList(e);
