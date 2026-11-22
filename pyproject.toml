@@ -73,6 +73,18 @@ strict = true
 module = "browser_harness.*"
 ignore_missing_imports = true
 
+# torch/transformers are the optional `local` extra (ADR-001): the
+# types CI job syncs --dev only, so they are absent there. They are
+# touched solely through the lazy loader in local_decider.py, typed
+# as Any at that seam.
+[[tool.mypy.overrides]]
+module = "torch.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "transformers.*"
+ignore_missing_imports = true
+
 # Native TOML config (pytest >= 9.0), replacing [tool.pytest.ini_options].
 # Strict mode enables strict_config/markers/parametrization_ids/xfail plus
 # any strictness options future pytest versions add; upstream recommends

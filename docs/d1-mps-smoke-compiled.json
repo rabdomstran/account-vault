@@ -1,0 +1,229 @@
+{
+ "environment": {
+  "date": "2026-11-22",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "cpu": "Apple M4",
+  "memory_gb": 17.2,
+  "python": "3.12.16",
+  "torch": "2.15.0",
+  "transformers": "5.23.0",
+  "git_sha": "691fe6e",
+  "model": "LiquidAI/d1-2B",
+  "revision": "a6bce774e6dde338dcc3036ceb5d91f78bf4c19e",
+  "device": "mps",
+  "mode": "compiled (model.compile())",
+  "dtype": "bfloat16",
+  "gate": "ADR-001: local decide p50 < 100 ms on Apple M4",
+  "card_reference": {
+   "hardware": "Apple M5 Pro (mps), warm after model.compile(), bf16, median of 20, best of 3 runs",
+   "one_question_ms": 18.6,
+   "three_questions_ms": 26.5,
+   "state_5k_tokens_ms": 753
+  }
+ },
+ "load_ms": 10164.0,
+ "first_compiled_call_ms": 6778.2,
+ "runs_per_case": 20,
+ "warmup_per_case": 3,
+ "cases": {
+  "card-quickstart": {
+   "latency_ms": {
+    "n": 20,
+    "mean": 431.34832704999997,
+    "stdev": 116.26083277061642,
+    "min": 363.444541,
+    "p50": 382.3227295,
+    "p90": 536.6200083000002,
+    "p95": 677.1669371500001,
+    "p99": 803.4938202299998,
+    "max": 835.075541
+   },
+   "input_tokens": 189,
+   "questions": 4,
+   "answer_check": "ok",
+   "sample_answers": {
+    "refund": {
+     "type": "noul",
+     "noul": 0.9971041166493052
+    },
+    "team": {
+     "type": "choice",
+     "choice": "billing",
+     "confidence": 0.7118361345302291
+    },
+    "topics": {
+     "type": "choice",
+     "choices": [
+      "billing",
+      "delivery"
+     ]
+    },
+    "urgency": {
+     "type": "score",
+     "score": 1.0,
+     "confidence": 0.6748462451918643,
+     "legend": {
+      "0": "low",
+      "1": "medium",
+      "2": "high"
+     }
+    }
+   }
+  },
+  "card-1-question": {
+   "latency_ms": {
+    "n": 20,
+    "mean": 167.4032561,
+    "stdev": 21.44878827895189,
+    "min": 143.58525,
+    "p50": 160.677833,
+    "p90": 196.2072328,
+    "p95": 205.20696935,
+    "p99": 210.23832667,
+    "max": 211.496166
+   },
+   "input_tokens": 64,
+   "questions": 1,
+   "answer_check": "ok",
+   "sample_answers": {
+    "team": {
+     "type": "choice",
+     "choice": "billing",
+     "confidence": 0.61687438763516
+    }
+   }
+  },
+  "wire-hotel": {
+   "latency_ms": {
+    "n": 20,
+    "mean": 8022.3557749,
+    "stdev": 1358.8552935152545,
+    "min": 6358.639333,
+    "p50": 7538.815667000001,
+    "p90": 9810.9787756,
+    "p95": 10113.46897705,
+    "p99": 10348.09202821,
+    "max": 10406.747791
+   },
+   "input_tokens": 2689,
+   "questions": 4,
+   "answer_check": "ok",
+   "sample_answers": {
+    "operation": {
+     "type": "choice",
+     "choice": "TYPE_TEXT",
+     "confidence": 0.9419506763524593
+    },
+    "click_target": {
+     "type": "choice",
+     "choice": "3",
+     "confidence": 0.430447259973766
+    },
+    "type_text_target": {
+     "type": "choice",
+     "choice": "3",
+     "confidence": 0.940159995173162
+    },
+    "select_target": {
+     "type": "choice",
+     "choice": "5:1",
+     "confidence": 0.745972927501592
+    }
+   }
+  },
+  "wire-catalog": {
+   "latency_ms": {
+    "n": 20,
+    "mean": 11071.15835405,
+    "stdev": 848.4478789362101,
+    "min": 9716.95825,
+    "p50": 11016.878291500001,
+    "p90": 11904.563103800001,
+    "p95": 12560.99787645,
+    "p99": 12708.83437529,
+    "max": 12745.7935
+   },
+   "input_tokens": 4186,
+   "questions": 4,
+   "answer_check": "ok",
+   "sample_answers": {
+    "operation": {
+     "type": "choice",
+     "choice": "SELECT",
+     "confidence": 0.7380792173053067
+    },
+    "click_target": {
+     "type": "choice",
+     "choice": "12",
+     "confidence": 0.46008472876017786
+    },
+    "type_text_target": {
+     "type": "choice",
+     "choice": "5",
+     "confidence": 0.6528324339554503
+    },
+    "select_target": {
+     "type": "choice",
+     "choice": "9:1",
+     "confidence": 0.9240552721305635
+    }
+   }
+  },
+  "wire-5k": {
+   "latency_ms": {
+    "n": 20,
+    "mean": 12042.782919000001,
+    "stdev": 569.5167909486096,
+    "min": 11105.557167,
+    "p50": 12022.574771,
+    "p90": 12535.6449286,
+    "p95": 13123.1898816,
+    "p99": 13489.473243519999,
+    "max": 13581.044084
+   },
+   "input_tokens": 4990,
+   "questions": 4,
+   "answer_check": "ok",
+   "sample_answers": {
+    "operation": {
+     "type": "choice",
+     "choice": "TYPE_TEXT",
+     "confidence": 0.9322599516718503
+    },
+    "click_target": {
+     "type": "choice",
+     "choice": "1",
+     "confidence": 0.37552817554123935
+    },
+    "type_text_target": {
+     "type": "choice",
+     "choice": "3",
+     "confidence": 0.9818669523693662
+    },
+    "select_target": {
+     "type": "choice",
+     "choice": "5:1",
+     "confidence": 0.7532555211993497
+    }
+   }
+  }
+ },
+ "memory": {
+  "process_max_rss_mb": 876.9,
+  "mps_current_allocated_mb": 3842.7,
+  "mps_driver_allocated_mb": 6863.7,
+  "swapusage": "total = 8192.00M  used = 6925.94M  free = 1266.06M  (encrypted)"
+ },
+ "warnings": [],
+ "verdict": {
+  "gate_p50_ms": 100.0,
+  "wire_cases_p50_ms": {
+   "wire-hotel": 7538.815667000001,
+   "wire-catalog": 11016.878291500001,
+   "wire-5k": 12022.574771
+  },
+  "every_wire_case_below_gate": false,
+  "note": "ADR-001 gate is on loop decide p50 (see latency harness --decider local-d1); this smoke prices the forward pass the loop would pay per step at matched token counts."
+ }
+}

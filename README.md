@@ -29,10 +29,17 @@ ACCOUNT_VAULT_LIVE=1 uv run pytest tests/test_live_cdp.py  # real Chrome, dedica
 
 The live-Chrome (CDP) backend is exercised end to end against a real
 (dedicated-profile) Chrome driving the JS fixture to DONE — see
-`tests/test_live_cdp.py`. The System-One wire client is unit-tested with
-mocks but not yet exercised against a real decide model. The vault and
-eval harness are not yet implemented. The model decision is settled and
-recorded in [ADR-001](docs/adr-001-model-choice.md).
+`tests/test_live_cdp.py`. The System-One HTTP wire client is unit-tested
+with mocks; the loop itself has now run end to end against a real
+decide model via the in-process adapter (next paragraph). The vault and
+eval harness are not yet implemented. The model decision is recorded
+in [ADR-001](docs/adr-001-model-choice.md); its latency validation
+gate has since been run against a real local d1-2B and **failed**
+(decide p50 8,056 ms on this M4 vs the < 100 ms gate — see
+[d1-mps-smoke.md](docs/d1-mps-smoke.md)), so the primary-model pick
+stands triggered for revision. The in-process adapter
+(`LocalD1Decider`) and `--decider local-d1` harness wiring remain
+the way any successor gets priced.
 
 ## How it works
 
@@ -78,9 +85,10 @@ primary perception stays the DOM snapshot.
 
 Why d1-2B:
 
-- **Local, millisecond-class inference.** Vendor-measured at 5.7 ms per
-  decision on an NVIDIA H100 (Apple Silicon MPS latency is still to be
-  verified locally), with no network round trip and no per-step API cost.
+- **Local inference.** Vendor-measured at 5.7 ms per decision on an
+  NVIDIA H100 — but **measured locally at seconds per decide on this
+  M4** (p50 8,056 ms in-loop; see the gate result above), with no
+  network round trip and no per-step API cost.
   Credential-bearing page state never has to leave the machine — decisive
   for an agent whose roadmap is creating and storing its own logins.
 - **Largest validated context among the small finalists:** 128k tokens
@@ -96,11 +104,13 @@ Why d1-2B:
 Trade-offs and risks (all recorded in ADR-001): d1-2B ships under the
 **LFM Open License v1.0**, not Apache-2.0 — commercial terms must be
 reviewed before any commercial deployment, and this is the pick's biggest
-non-technical risk. Browser-specific accuracy is unproven until the
-validation gate in ADR-001 passes (tasks: Google Flights, Wikipedia,
-local hotel filter; each with an independent outcome checker; keep d1-2B
-only if it stays within one failure of Jev and sustains < 100 ms p50
-decide latency on the Apple M4 dev machine). joey-1 has the strongest
+non-technical risk. Browser-specific accuracy is unproven, and the
+validation gate's latency half has now failed (tasks: Google Flights,
+Wikipedia, local hotel filter; each with an independent outcome
+checker; keep d1-2B only if it stays within one failure of Jev and
+sustains < 100 ms p50 decide latency on the Apple M4 dev machine —
+measured p50 is 8,056 ms, so the pick is triggered for revision per
+ADR-001). joey-1 has the strongest
 small-model public accuracy (63.30 on the Jev Decision Index 0.4 public
 split, ahead of Jev 1.14's 60.70) and the cleanest license (MIT +
 Apache-2.0), but its self-hosting path requires a CUDA GPU, which makes

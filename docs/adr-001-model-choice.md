@@ -1,6 +1,7 @@
 # ADR-001: System-One model for the decide step
 
-- **Status:** Accepted
+- **Status:** Accepted — **validation gate FAILED on latency
+  (2026-11-22, see addendum below); revisit triggered**
 - **Date:** 2026-11-21
 - **Deciders:** Project owner + Muse Code (research)
 - **References:**
@@ -329,6 +330,52 @@ probabilities are not interchangeable across models.
 4. Log every (state, questions, answers, executed action, outcome) tuple
    locally from day one — this is the fine-tuning dataset that eventually
    closes any accuracy gap.
+
+### Gate result — first measurement (2026-11-22, addendum)
+
+The latency half of this gate ran for the first time against a real
+model (everything before was offline doubles at ~0.05 ms or
+published figures substituted arithmetically). Full record:
+[d1-mps-smoke.md](d1-mps-smoke.md); raw data in
+`d1-mps-smoke{,-compiled}.json` and `latency-measurement-d1.json`.
+
+- **Setup:** d1-2B @ `a6bce77`, in-process Transformers on MPS
+  (bf16; eager and `model.compile()`), Apple M4 MacBook Air 16 GB —
+  the dev machine this gate names. Decide measured through the
+  loop's own request builder/validator via
+  `account_vault.local_decider.LocalD1Decider` and
+  `scripts/latency_harness.py --decider local-d1`.
+- **Loop decide p50: 8,056 ms (p95 22,268 ms, n=18 acted steps,
+  compiled).** Isolated forward passes at matched sizes agree:
+  2,689-token frozen hotel request 7,539 ms p50; 4,990-token state
+  12,023 ms p50 (card: 753 ms on M5 Pro); the card's 64-token
+  one-question example 161 ms p50 (card: 18.6 ms). Eager is
+  1.5–2.7× slower still. Smallest decide observed anywhere at a
+  loop-realistic size: ~2.0 s (one question, 1,087 tokens).
+- **Verdict: the "local decide p50 < 100 ms on the M4" keep
+  condition FAILS by ~80×.** The accuracy half (within 1 failure
+  of Jev on Flights/Wikipedia/hotel) remains unrun — the only
+  quality signal is anecdotal (catalog fixture completed 2/2 under
+  its independent checker; hotel blocked 2/2 at the 0.5 confidence
+  gate after six plausible actions) — but the gate is conjunctive,
+  so **the keep condition is not met and this decision stands
+  triggered for revision** per Revisit triggers below. This
+  addendum records the evidence; selecting the successor
+  configuration (joey-1 hosted/CUDA, Jev-primary with local-only
+  credential steps, an MLX-served d1 variant, or a smaller/faster
+  local model) is the follow-up decision, to be taken with the
+  Tier R accuracy numbers the accuracy-ceiling doc prices.
+- **What this does not overturn:** the loop design, the wire
+  contract, and the local-first requirement (R6) are untouched —
+  the harness now measures any candidate's decide stage for real
+  (`--decider`), which is how the successor should be priced.
+  Caveats (swap pressure on a 16 GB Air, thermals, vendor
+  best-of-3 methodology) are recorded in the smoke doc §5; they
+  are worth ~2–3×, not 80×.
+- Consequences item (4) above ("MPS latency is assumed, not
+  measured") and the comparison table's "MPS TBD" are superseded
+  by this addendum; the original text is left as the decision-time
+  record.
 
 ## Revisit triggers
 

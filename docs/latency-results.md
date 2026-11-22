@@ -404,11 +404,15 @@ from root offsets), and any commit later than 3 s.
 
 ## Limits — what this does not show
 
-- **No real decide/text model was run.** All decide/text rows are
-  offline doubles (≈0 ms) plus arithmetic substitution of
-  published latencies. The ADR-001 gate (measure a real decider
-  end to end on this machine) remains open; re-running this
-  harness with `--decider`-equivalent wiring is the follow-up.
+- **No real decide/text model was run for the tables above.** All
+  decide/text rows there are offline doubles (≈0 ms) plus
+  arithmetic substitution of published latencies. **Closed
+  2026-11-22:** the harness gained `--decider local-d1` and the
+  ADR-001 gate ran end to end — decide p50 8,056 ms over acted
+  steps, gate **FAILED**; see the follow-up at the end of this
+  document and [d1-mps-smoke.md](d1-mps-smoke.md). The text helper
+  is still a double in every run (real-model TYPE_TEXT latency
+  remains unmeasured).
 - **Local files only.** No DNS/TLS/network, no server latency, no
   bot mitigation, tiny DOMs (8–22 elements vs real pages). Settle
   on the live web will be larger and more variable; upstream's
@@ -480,3 +484,33 @@ page was just observed in the same tick — which changes loop
 semantics upstream chose deliberately, and wants its own
 argument (and ideally a real-site page where the saving is not
 swamped by a 26 ms settle floor). Not attempted here.
+
+## Follow-up: a real decider in the loop — ADR-001 gate FAILS (2026-11-22)
+
+The `--decider`-equivalent wiring the Limits section asked for now
+exists (`--decider local-d1`: one shared in-process
+`LocalD1Decider`, per-config independent checkers kept), and the
+gate ran. Full record: [d1-mps-smoke.md](d1-mps-smoke.md); raw
+data [latency-measurement-d1.json](latency-measurement-d1.json)
+(static backend, compiled d1-2B on MPS, 2 runs/config, same
+machine and harness, tree `perf/d1-mps-smoke` on `691fe6e`).
+
+| Config | Status | Acted steps | Decide p50 / p95 (ms) | Step p50 (ms) | Decide share |
+|---|---|---:|---:|---:|---:|
+| static-hotel | blocked ×2 (0.5 confidence gate) | 12 | 7,688 / 12,426 | 7,693 | 99.9% |
+| static-catalog | done ×2 (checker-verified) | 6 | 15,039 / 22,319 | 15,043 | 100.0% |
+
+**Decide over all 18 acted steps: p50 8,056 ms, p95 22,268 ms —
+the ADR-001 < 100 ms p50 gate fails by ~80×** (harness prints the
+verdict as `adr001_gate` in every results file now). Every
+machinery stage this document measured (≈33 ms CDP step, 26 ms
+settle, 3–6 ms snapshot) is below rounding next to it: with this
+backend a step *is* its decide call, and the earlier modelled
+rows ("here + 102/178 ms substituted") are retired — the
+substitution is no longer needed or flattering. Two run notes:
+identical 3-action catalog completions took 29 s and 64 s of step
+time (decide variance under swap/thermals on the 16 GB Air; see
+smoke §5), and the hotel runs are the first real-model firing of
+the both-confidences gate. Text remained a double, so TYPE_TEXT
+steps still understate a fully-real loop — pessimism the verdict
+does not need.

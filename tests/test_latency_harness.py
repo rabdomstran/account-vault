@@ -183,6 +183,49 @@ def test_configs_include_settle_paths_only_on_cdp():
     assert "cdp-scroll" not in [c["name"] for c in harness.configs(include_cdp=False)]
 
 
+def test_with_shared_decider_keeps_checker_and_provider():
+    config = harness.configs(include_cdp=False)[0]
+    double, provider = config["make_parts"]()
+
+    class Shared:
+        def choose(self, state, goal, history):
+            return double.choose(state, goal, history)
+
+    wrapped = harness.with_shared_decider(config, Shared())
+    shared_again, provider_again = wrapped["make_parts"]()
+    assert isinstance(shared_again, Shared)
+    assert provider_again is not None
+    # The config's independent checker rides along explicitly; the
+    # shared (real) decider is never its own DONE judge. (Each
+    # make_parts() call mints a fresh double, so compare verdicts,
+    # not identity.)
+    assert callable(wrapped["done_when"])
+    browser = config["make_browser"](config["url"])
+    try:
+        first_page = browser.observe()
+    finally:
+        browser.close()
+    assert wrapped["done_when"](first_page) == double.done_when(first_page) is False
+    # And the wrapped config still drives to done through the loop.
+    record = harness.drive_run(
+        wrapped["make_browser"], wrapped["make_parts"], wrapped["url"], wrapped["goal"], done_when=wrapped["done_when"]
+    )
+    assert record["status"] == "done"
+
+
+def test_adr001_gate_uses_acted_step_decide_p50_strictly():
+    def results_with(decide_ms, kind="click"):
+        steps = [{"kind": kind, "stages_ms": {"decide": ms}} for ms in decide_ms]
+        return {"configs": [{"runs": [{"steps": steps}]}]}
+
+    gate = harness.adr001_gate(results_with([10.0, 20.0, 30.0]))
+    assert gate["passed"] is True and gate["decide_ms_acted_steps"]["p50"] == 20.0
+    gate = harness.adr001_gate(results_with([100.0]))
+    assert gate["passed"] is False  # the ADR says < 100, not <=
+    gate = harness.adr001_gate(results_with([900.0], kind="terminal"))
+    assert gate["passed"] is False and gate["decide_ms_acted_steps"]["n"] == 0
+
+
 def test_micro_static_reports_request_size():
     micro = harness.micro_static(3)
     for label in ("hotel", "catalog"):

@@ -1,0 +1,1083 @@
+{
+ "environment": {
+  "date": "2026-11-22",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "cpu": "Apple M4",
+  "python": "3.12.16",
+  "chrome": "Google Chrome 156.0.8078.82",
+  "git_sha": "691fe6e",
+  "decider": "LocalD1Decider (LiquidAI/d1-2B on mps, compiled, load 10243 ms)",
+  "text_provider": "MappingTextProvider (offline double)",
+  "screenshots": "off (loop default)"
+ },
+ "configs": [
+  {
+   "name": "static-hotel",
+   "backend": "static",
+   "page": "examples/hotel_search.html",
+   "goal": "Search stays near Zurich checking in on 2027-03-01 for the promo 1-guest rate with free cancellation. Stop when matching stays are visible.",
+   "runs": [
+    {
+     "status": "blocked",
+     "blocked_reason": "Decision confidence below the 0.5 floor (target) after re-observing; nothing executed",
+     "setup_ms": 1.179875,
+     "decisions": 8,
+     "actions": 6,
+     "final_title": "Forma \u00b7 Find a place to slow down",
+     "final_text_has_free_cancellation": false,
+     "steps": [
+      {
+       "tick": 0,
+       "kind": "fill",
+       "operation": "TYPE_TEXT",
+       "action": "Destination",
+       "stages_ms": {
+        "snapshot": 0.830792,
+        "settle": 0.0,
+        "observe": 0.003583,
+        "decide": 17664.521083,
+        "act": 0.051083,
+        "text": 0.014417,
+        "other": 0.352625,
+        "step": 17665.773583
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 1,
+       "kind": "fill",
+       "operation": "TYPE_TEXT",
+       "action": "Check-in",
+       "stages_ms": {
+        "snapshot": 1.504584,
+        "settle": 0.0,
+        "observe": 0.017374,
+        "decide": 6788.556166,
+        "act": 0.886625,
+        "text": 0.06475,
+        "other": 1.475876,
+        "step": 6792.505375
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 2,
+       "kind": "select",
+       "operation": "SELECT",
+       "action": "Guests \u2192 1 guest (promo)",
+       "stages_ms": {
+        "snapshot": 2.21825,
+        "settle": 0.0,
+        "observe": 0.034,
+        "decide": 6667.68675,
+        "act": 0.234334,
+        "text": 0.0,
+        "other": 0.831499,
+        "step": 6671.004833
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 3,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "Free cancellation",
+       "stages_ms": {
+        "snapshot": 0.777375,
+        "settle": 0.0,
+        "observe": 0.0095,
+        "decide": 6540.5865,
+        "act": 0.173083,
+        "text": 0.0,
+        "other": 0.265334,
+        "step": 6541.811792
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 4,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "Search",
+       "stages_ms": {
+        "snapshot": 0.592334,
+        "settle": 0.0,
+        "observe": 0.010832,
+        "decide": 6633.982292,
+        "act": 5.120375,
+        "text": 0.0,
+        "other": 0.218834,
+        "step": 6639.924667
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 5,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "Search",
+       "stages_ms": {
+        "snapshot": 0.879125,
+        "settle": 0.0,
+        "observe": 0.019291,
+        "decide": 7385.218417,
+        "act": 0.492125,
+        "text": 0.0,
+        "other": 0.322875,
+        "step": 7386.931833
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 6,
+       "kind": "noact",
+       "operation": null,
+       "action": null,
+       "stages_ms": {
+        "snapshot": 4.3855,
+        "settle": 0.0,
+        "observe": 0.014916,
+        "decide": 7879.386666,
+        "act": 0.0,
+        "text": 0.0,
+        "other": 0.323043,
+        "step": 7884.110125
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 7,
+       "kind": "terminal",
+       "operation": null,
+       "action": null,
+       "stages_ms": {
+        "snapshot": 0.0,
+        "settle": 0.0,
+        "observe": 0.0,
+        "decide": 8601.504291,
+        "act": 0.0,
+        "text": 0.0,
+        "other": 1.810584,
+        "step": 8603.314875
+       },
+       "snapshot_evals": 0,
+       "cdp_calls": 0,
+       "elements": 14
+      }
+     ],
+     "total_step_ms": 68185.377083
+    },
+    {
+     "status": "blocked",
+     "blocked_reason": "Decision confidence below the 0.5 floor (target) after re-observing; nothing executed",
+     "setup_ms": 24.068959,
+     "decisions": 8,
+     "actions": 6,
+     "final_title": "Forma \u00b7 Find a place to slow down",
+     "final_text_has_free_cancellation": false,
+     "steps": [
+      {
+       "tick": 0,
+       "kind": "fill",
+       "operation": "TYPE_TEXT",
+       "action": "Destination",
+       "stages_ms": {
+        "snapshot": 12.026667,
+        "settle": 0.0,
+        "observe": 0.021958,
+        "decide": 8140.241333,
+        "act": 3.289,
+        "text": 0.027041,
+        "other": 6.273918,
+        "step": 8161.879917
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 1,
+       "kind": "fill",
+       "operation": "TYPE_TEXT",
+       "action": "Check-in",
+       "stages_ms": {
+        "snapshot": 6.010958,
+        "settle": 0.0,
+        "observe": 0.017917,
+        "decide": 8136.445291,
+        "act": 10.589584,
+        "text": 0.020542,
+        "other": 0.766833,
+        "step": 8153.851125
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 2,
+       "kind": "select",
+       "operation": "SELECT",
+       "action": "Guests \u2192 1 guest (promo)",
+       "stages_ms": {
+        "snapshot": 2.841667,
+        "settle": 0.0,
+        "observe": 0.01375,
+        "decide": 7476.809917,
+        "act": 0.22925,
+        "text": 0.0,
+        "other": 0.574124,
+        "step": 7480.468708
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 3,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "Free cancellation",
+       "stages_ms": {
+        "snapshot": 5.481584,
+        "settle": 0.0,
+        "observe": 0.014207,
+        "decide": 7899.437458,
+        "act": 0.751208,
+        "text": 0.0,
+        "other": 0.388251,
+        "step": 7906.072708
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 4,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "Search",
+       "stages_ms": {
+        "snapshot": 1.376208,
+        "settle": 0.0,
+        "observe": 0.030709,
+        "decide": 7975.69075,
+        "act": 0.639375,
+        "text": 0.0,
+        "other": 0.622708,
+        "step": 7978.35975
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 5,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "Search",
+       "stages_ms": {
+        "snapshot": 1.110292,
+        "settle": 0.0,
+        "observe": 0.018292,
+        "decide": 7943.0365,
+        "act": 0.482167,
+        "text": 0.0,
+        "other": 0.727832,
+        "step": 7945.375083
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 6,
+       "kind": "noact",
+       "operation": null,
+       "action": null,
+       "stages_ms": {
+        "snapshot": 1.399333,
+        "settle": 0.0,
+        "observe": 0.019167,
+        "decide": 7914.93925,
+        "act": 0.0,
+        "text": 0.0,
+        "other": 0.280959,
+        "step": 7916.638709
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 14
+      },
+      {
+       "tick": 7,
+       "kind": "terminal",
+       "operation": null,
+       "action": null,
+       "stages_ms": {
+        "snapshot": 0.0,
+        "settle": 0.0,
+        "observe": 0.0,
+        "decide": 7528.430167,
+        "act": 0.0,
+        "text": 0.0,
+        "other": 0.766124,
+        "step": 7529.196291
+       },
+       "snapshot_evals": 0,
+       "cdp_calls": 0,
+       "elements": 14
+      }
+     ],
+     "total_step_ms": 63071.842291
+    }
+   ],
+   "summary": {
+    "runs": 2,
+    "statuses": {
+     "blocked": 2
+    },
+    "run_total_step_ms": {
+     "n": 2,
+     "mean": 65628.609687,
+     "stdev": 2556.7673959999993,
+     "min": 63071.842291,
+     "p50": 65628.609687,
+     "p90": 67674.0236038,
+     "p95": 67929.70034339999,
+     "p99": 68134.24173508,
+     "max": 68185.377083
+    },
+    "setup_ms": {
+     "n": 2,
+     "mean": 12.624417,
+     "stdev": 11.444541999999998,
+     "min": 1.179875,
+     "p50": 12.624417000000001,
+     "p90": 21.7800506,
+     "p95": 22.924504799999998,
+     "p99": 23.840068159999998,
+     "max": 24.068959
+    },
+    "steps": 16,
+    "acted_steps": 12,
+    "stages_ms": {
+     "snapshot": {
+      "n": 12,
+      "mean": 2.970819666666667,
+      "stdev": 3.2367072545967486,
+      "min": 0.592334,
+      "p50": 1.440396,
+      "p90": 5.958020599999999,
+      "p95": 8.718027049999996,
+      "p99": 11.364939010000004,
+      "max": 12.026667
+     },
+     "settle": {
+      "n": 12,
+      "mean": 0.0,
+      "stdev": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p90": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+     },
+     "observe": {
+      "n": 12,
+      "mean": 0.017617749999999998,
+      "stdev": 0.008152255496946844,
+      "min": 0.003583,
+      "p50": 0.0176455,
+      "p90": 0.029833900000000003,
+      "p95": 0.03218995,
+      "p99": 0.033637990000000006,
+      "max": 0.034
+     },
+     "decide": {
+      "n": 12,
+      "mean": 8271.01770475,
+      "stdev": 2893.4412228549263,
+      "min": 6540.5865,
+      "p50": 7688.1236874999995,
+      "p90": 8139.8617288,
+      "p95": 12426.167220499992,
+      "p99": 16616.850310500005,
+      "max": 17664.521083
+     },
+     "act": {
+      "n": 12,
+      "mean": 1.9115174166666666,
+      "stdev": 2.9958608859961955,
+      "min": 0.051083,
+      "p50": 0.56575,
+      "p90": 4.937237500000001,
+      "p95": 7.581519049999996,
+      "p99": 9.987971010000003,
+      "max": 10.589584
+     },
+     "text": {
+      "n": 12,
+      "mean": 0.0105625,
+      "stdev": 0.01874123119176895,
+      "min": 0.0,
+      "p50": 0.0,
+      "p90": 0.0263911,
+      "p95": 0.044010049999999974,
+      "p99": 0.060602010000000026,
+      "max": 0.06475
+     },
+     "other": {
+      "n": 12,
+      "mean": 1.0683924166666667,
+      "stdev": 1.6038203658329622,
+      "min": 0.218834,
+      "p50": 0.5984160000000001,
+      "p90": 1.4114383000000001,
+      "p95": 3.634994899999997,
+      "p99": 5.746133380000003,
+      "max": 6.273918
+     },
+     "step": {
+      "n": 12,
+      "mean": 8276.9966145,
+      "stdev": 2892.731664365781,
+      "min": 6541.811792,
+      "p50": 7693.270708,
+      "p90": 8161.077037800001,
+      "p95": 12438.632066699993,
+      "p99": 16620.345279740002,
+      "max": 17665.773583
+     }
+    },
+    "shares_acted_steps": {
+     "snapshot": 0.00035892483771979034,
+     "settle": 0.0,
+     "observe": 2.128519657617893e-06,
+     "decide": 0.9992776474331854,
+     "act": 0.00023094336094302468,
+     "text": 1.276127137891558e-06,
+     "other": 0.00012907972135629616
+    },
+    "shares_all_steps": {
+     "snapshot": 0.0003156753525452754,
+     "settle": 0.0,
+     "observe": 1.8703428365375604e-06,
+     "decide": 0.9993848220815197,
+     "act": 0.00017475769416263972,
+     "text": 9.6566116975892e-07,
+     "other": 0.0001219088677660166
+    },
+    "act_plus_settle_share_acted": 0.00023094336094302468,
+    "snapshot_evals_per_acted_step": {
+     "n": 12,
+     "mean": 1.0,
+     "stdev": 0.0,
+     "min": 1.0,
+     "p50": 1.0,
+     "p90": 1.0,
+     "p95": 1.0,
+     "p99": 1.0,
+     "max": 1.0
+    },
+    "by_kind": {
+     "click": {
+      "n": 6,
+      "step_ms": {
+       "n": 6,
+       "mean": 7399.745972166666,
+       "stdev": 605.8623976549161,
+       "min": 6541.811792,
+       "p50": 7646.502270499999,
+       "p90": 7961.867416499999,
+       "p95": 7970.1135832499995,
+       "p99": 7976.71051665,
+       "max": 7978.35975
+      },
+      "shares": {
+       "snapshot": 0.000230118665299003,
+       "settle": 0.0,
+       "observe": 2.316093020552947e-06,
+       "decide": 0.999537733770925,
+       "act": 0.00017249089875981285,
+       "text": 0.0,
+       "other": 5.734057199566661e-05
+      }
+     },
+     "fill": {
+      "n": 4,
+      "step_ms": {
+       "n": 4,
+       "mean": 10193.502499999999,
+       "stdev": 4349.979443439682,
+       "min": 6792.505375,
+       "p50": 8157.865521,
+       "p90": 14814.6054832,
+       "p95": 16240.189533099994,
+       "p99": 17380.656773019997,
+       "max": 17665.773583
+      },
+      "shares": {
+       "snapshot": 0.0004996565459222677,
+       "settle": 0.0,
+       "observe": 1.4919307666820115e-06,
+       "decide": 0.998914844848471,
+       "act": 0.00036337588576644786,
+       "text": 3.108597854368506e-06,
+       "other": 0.00021752219121935764
+      }
+     },
+     "noact": {
+      "n": 2,
+      "step_ms": {
+       "n": 2,
+       "mean": 7900.374417,
+       "stdev": 16.26429199999984,
+       "min": 7884.110125,
+       "p50": 7900.374417,
+       "p90": 7913.3858506,
+       "p95": 7915.0122798,
+       "p99": 7916.31342316,
+       "max": 7916.638709
+      },
+      "shares": {
+       "snapshot": 0.0003661113192023036,
+       "settle": 0.0,
+       "observe": 2.157049666320897e-06,
+       "decide": 0.99959350546816,
+       "act": 0.0,
+       "text": 0.0,
+       "other": 3.822616297148591e-05
+      }
+     },
+     "select": {
+      "n": 2,
+      "step_ms": {
+       "n": 2,
+       "mean": 7075.7367705,
+       "stdev": 404.73193750000013,
+       "min": 6671.004833,
+       "p50": 7075.7367705,
+       "p90": 7399.5223205,
+       "p95": 7439.99551425,
+       "p99": 7472.3740692500005,
+       "max": 7480.468708
+      },
+      "shares": {
+       "snapshot": 0.0003575540727501121,
+       "settle": 0.0,
+       "observe": 3.374206923516305e-06,
+       "decide": 0.9995069860407267,
+       "act": 3.2758708742018484e-05,
+       "text": 0.0,
+       "other": 9.932697085767034e-05
+      }
+     },
+     "terminal": {
+      "n": 2,
+      "step_ms": {
+       "n": 2,
+       "mean": 8066.255583,
+       "stdev": 537.0592919999999,
+       "min": 7529.196291,
+       "p50": 8066.255583,
+       "p90": 8495.9030166,
+       "p95": 8549.6089458,
+       "p99": 8592.573689159999,
+       "max": 8603.314875
+      },
+      "shares": {
+       "snapshot": 0.0,
+       "settle": 0.0,
+       "observe": 0.0,
+       "decide": 0.9998402785546846,
+       "act": 0.0,
+       "text": 0.0,
+       "other": 0.00015972144531537836
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "static-catalog",
+   "backend": "static",
+   "page": "src/account_vault/static/catalog.html",
+   "goal": "Find a Design stay in Lisbon with Free cancellation and open Casa Flora.",
+   "runs": [
+    {
+     "status": "done",
+     "blocked_reason": null,
+     "setup_ms": 9.142334,
+     "decisions": 3,
+     "actions": 3,
+     "final_title": "Forma \u00b7 Find a place to slow down (static catalog)",
+     "final_text_has_free_cancellation": true,
+     "steps": [
+      {
+       "tick": 0,
+       "kind": "select",
+       "operation": "SELECT",
+       "action": "Stay category \u2192 Design",
+       "stages_ms": {
+        "snapshot": 2.233417,
+        "settle": 0.0,
+        "observe": 0.003749,
+        "decide": 19764.451834,
+        "act": 0.078416,
+        "text": 0.0,
+        "other": 0.313459,
+        "step": 19767.080875
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 30
+      },
+      {
+       "tick": 1,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "Free cancellation",
+       "stages_ms": {
+        "snapshot": 5.924,
+        "settle": 0.0,
+        "observe": 0.035,
+        "decide": 22255.227083,
+        "act": 0.335042,
+        "text": 0.0,
+        "other": 2.515375,
+        "step": 22264.0365
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 30
+      },
+      {
+       "tick": 2,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "View Casa Flora",
+       "stages_ms": {
+        "snapshot": 2.131875,
+        "settle": 0.0,
+        "observe": 0.004542,
+        "decide": 22340.770583,
+        "act": 0.194083,
+        "text": 0.0,
+        "other": 0.404959,
+        "step": 22343.506042
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 30
+      }
+     ],
+     "total_step_ms": 64374.623416999995
+    },
+    {
+     "status": "done",
+     "blocked_reason": null,
+     "setup_ms": 4.101042,
+     "decisions": 3,
+     "actions": 3,
+     "final_title": "Forma \u00b7 Find a place to slow down (static catalog)",
+     "final_text_has_free_cancellation": true,
+     "steps": [
+      {
+       "tick": 0,
+       "kind": "select",
+       "operation": "SELECT",
+       "action": "Stay category \u2192 Design",
+       "stages_ms": {
+        "snapshot": 4.20025,
+        "settle": 0.0,
+        "observe": 0.037375,
+        "decide": 10313.83225,
+        "act": 0.351917,
+        "text": 0.0,
+        "other": 0.864458,
+        "step": 10319.28625
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 30
+      },
+      {
+       "tick": 1,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "Free cancellation",
+       "stages_ms": {
+        "snapshot": 3.709667,
+        "settle": 0.0,
+        "observe": 0.028292,
+        "decide": 9510.221291,
+        "act": 0.221417,
+        "text": 0.0,
+        "other": 0.537167,
+        "step": 9514.717834
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 30
+      },
+      {
+       "tick": 2,
+       "kind": "click",
+       "operation": "CLICK",
+       "action": "View Casa Flora",
+       "stages_ms": {
+        "snapshot": 2.67725,
+        "settle": 0.0,
+        "observe": 0.008792,
+        "decide": 9304.591292,
+        "act": 0.528708,
+        "text": 0.0,
+        "other": 0.374333,
+        "step": 9308.180375
+       },
+       "snapshot_evals": 1,
+       "cdp_calls": 0,
+       "elements": 30
+      }
+     ],
+     "total_step_ms": 29142.184458999996
+    }
+   ],
+   "summary": {
+    "runs": 2,
+    "statuses": {
+     "done": 2
+    },
+    "run_total_step_ms": {
+     "n": 2,
+     "mean": 46758.403937999996,
+     "stdev": 17616.219479,
+     "min": 29142.184458999996,
+     "p50": 46758.403937999996,
+     "p90": 60851.3795212,
+     "p95": 62613.001469099996,
+     "p99": 64022.29902742,
+     "max": 64374.623416999995
+    },
+    "setup_ms": {
+     "n": 2,
+     "mean": 6.621688,
+     "stdev": 2.520646,
+     "min": 4.101042,
+     "p50": 6.621688,
+     "p90": 8.6382048,
+     "p95": 8.8902694,
+     "p99": 9.091921079999999,
+     "max": 9.142334
+    },
+    "steps": 6,
+    "acted_steps": 6,
+    "stages_ms": {
+     "snapshot": {
+      "n": 6,
+      "mean": 3.4794098333333334,
+      "stdev": 1.3266787263452817,
+      "min": 2.131875,
+      "p50": 3.1934585,
+      "p90": 5.062125,
+      "p95": 5.493062500000001,
+      "p99": 5.837812500000001,
+      "max": 5.924
+     },
+     "settle": {
+      "n": 6,
+      "mean": 0.0,
+      "stdev": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p90": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+     },
+     "observe": {
+      "n": 6,
+      "mean": 0.019625,
+      "stdev": 0.014279753545959166,
+      "min": 0.003749,
+      "p50": 0.018542000000000003,
+      "p90": 0.0361875,
+      "p95": 0.03678125,
+      "p99": 0.03725625,
+      "max": 0.037375
+     },
+     "decide": {
+      "n": 6,
+      "mean": 15581.515722166667,
+      "stdev": 5940.423520984155,
+      "min": 9304.591292,
+      "p50": 15039.142042,
+      "p90": 22297.998833,
+      "p95": 22319.384708,
+      "p99": 22336.493408000002,
+      "max": 22340.770583
+     },
+     "act": {
+      "n": 6,
+      "mean": 0.2849305,
+      "stdev": 0.14222124476175607,
+      "min": 0.078416,
+      "p50": 0.2782295,
+      "p90": 0.4403125,
+      "p95": 0.48451025,
+      "p99": 0.5198684499999999,
+      "max": 0.528708
+     },
+     "text": {
+      "n": 6,
+      "mean": 0.0,
+      "stdev": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p90": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+     },
+     "other": {
+      "n": 6,
+      "mean": 0.8349584999999999,
+      "stdev": 0.7726994630509653,
+      "min": 0.313459,
+      "p50": 0.471063,
+      "p90": 1.6899165,
+      "p95": 2.10264575,
+      "p99": 2.4328291500000003,
+      "max": 2.515375
+     },
+     "step": {
+      "n": 6,
+      "mean": 15586.134645999999,
+      "stdev": 5940.696601762795,
+      "min": 9308.180375,
+      "p50": 15043.183562499999,
+      "p90": 22303.771270999998,
+      "p95": 22323.6386565,
+      "p99": 22339.5325649,
+      "max": 22343.506042
+     }
+    },
+    "shares_acted_steps": {
+     "snapshot": 0.00022323750643500848,
+     "settle": 0.0,
+     "observe": 1.259131942956526e-06,
+     "decide": 0.9997036517431526,
+     "act": 1.8281023901787227e-05,
+     "text": 0.0,
+     "other": 5.357059456779955e-05
+    },
+    "shares_all_steps": {
+     "snapshot": 0.00022323750643500848,
+     "settle": 0.0,
+     "observe": 1.259131942956526e-06,
+     "decide": 0.9997036517431526,
+     "act": 1.8281023901787227e-05,
+     "text": 0.0,
+     "other": 5.357059456779955e-05
+    },
+    "act_plus_settle_share_acted": 1.8281023901787227e-05,
+    "snapshot_evals_per_acted_step": {
+     "n": 6,
+     "mean": 1.0,
+     "stdev": 0.0,
+     "min": 1.0,
+     "p50": 1.0,
+     "p90": 1.0,
+     "p95": 1.0,
+     "p99": 1.0,
+     "max": 1.0
+    },
+    "by_kind": {
+     "click": {
+      "n": 4,
+      "step_ms": {
+       "n": 4,
+       "mean": 15857.61018775,
+       "stdev": 6446.635894206086,
+       "min": 9308.180375,
+       "p50": 15889.377166999999,
+       "p90": 22319.6651794,
+       "p95": 22331.5856107,
+       "p99": 22341.12195574,
+       "max": 22343.506042
+      },
+      "shares": {
+       "snapshot": 0.00022769496520915007,
+       "settle": 0.0,
+       "observe": 1.208031965295653e-06,
+       "decide": 0.9996905192244042,
+       "act": 2.0167761485715865e-05,
+       "text": 0.0,
+       "other": 6.041001693559239e-05
+      }
+     },
+     "select": {
+      "n": 2,
+      "step_ms": {
+       "n": 2,
+       "mean": 15043.183562499999,
+       "stdev": 4723.8973125,
+       "min": 10319.28625,
+       "p50": 15043.183562499999,
+       "p90": 18822.301412499997,
+       "p95": 19294.69114375,
+       "p99": 19672.60292875,
+       "max": 19767.080875
+      },
+      "shares": {
+       "snapshot": 0.0002138399419667389,
+       "settle": 0.0,
+       "observe": 1.3668649268667729e-06,
+       "decide": 0.9997313387499921,
+       "act": 1.430325563110006e-05,
+       "text": 0.0,
+       "other": 3.9151187483224595e-05
+      }
+     }
+    }
+   }
+  }
+ ],
+ "micro": {
+  "static": {
+   "hotel": {
+    "elements": 8,
+    "actions": 14,
+    "text_chars": 202,
+    "observe_build_ms": {
+     "n": 10,
+     "mean": 0.7479376,
+     "stdev": 0.08289267701214625,
+     "min": 0.639208,
+     "p50": 0.7417294999999999,
+     "p90": 0.8618631,
+     "p95": 0.88224405,
+     "p99": 0.89854881,
+     "max": 0.902625
+    },
+    "fresh_ms": {
+     "n": 10,
+     "mean": 0.0033292,
+     "stdev": 0.002106540329545105,
+     "min": 0.002375,
+     "p50": 0.002458,
+     "p90": 0.0045121999999999975,
+     "p95": 0.007006099999999994,
+     "p99": 0.00900122,
+     "max": 0.0095
+    },
+    "fingerprint_ms": {
+     "n": 10,
+     "mean": 0.042437600000000006,
+     "stdev": 0.003411238285432431,
+     "min": 0.039959,
+     "p50": 0.04125,
+     "p90": 0.0437831,
+     "p95": 0.04805854999999999,
+     "p99": 0.05147891,
+     "max": 0.052334
+    },
+    "build_choose_request_ms": {
+     "n": 10,
+     "mean": 0.19496249999999998,
+     "stdev": 0.12258676078700344,
+     "min": 0.139541,
+     "p50": 0.14775,
+     "p90": 0.23279999999999987,
+     "p95": 0.3961499999999996,
+     "p99": 0.5268300000000001,
+     "max": 0.5595
+    },
+    "request_json_chars": 10789
+   },
+   "catalog": {
+    "elements": 22,
+    "actions": 30,
+    "text_chars": 1384,
+    "observe_build_ms": {
+     "n": 10,
+     "mean": 1.4885,
+     "stdev": 0.1869691477378019,
+     "min": 1.261916,
+     "p50": 1.448083,
+     "p90": 1.7293714999999998,
+     "p95": 1.76554025,
+     "p99": 1.79447525,
+     "max": 1.801709
+    },
+    "fresh_ms": {
+     "n": 10,
+     "mean": 0.0042956,
+     "stdev": 0.0018717972753479475,
+     "min": 0.003416,
+     "p50": 0.0035624999999999997,
+     "p90": 0.0050710999999999985,
+     "p95": 0.007452049999999995,
+     "p99": 0.00935681,
+     "max": 0.009833
+    },
+    "fingerprint_ms": {
+     "n": 10,
+     "mean": 0.0587375,
+     "stdev": 0.0028544119271751937,
+     "min": 0.057292,
+     "p50": 0.0574585,
+     "p90": 0.060474999999999994,
+     "p95": 0.06373749999999999,
+     "p99": 0.0663475,
+     "max": 0.067
+    },
+    "build_choose_request_ms": {
+     "n": 10,
+     "mean": 0.15993770000000002,
+     "stdev": 0.037328347780339804,
+     "min": 0.1385,
+     "p50": 0.146,
+     "p90": 0.18390479999999995,
+     "p95": 0.2258483999999999,
+     "p99": 0.25940328,
+     "max": 0.267792
+    },
+    "request_json_chars": 15449
+   }
+  }
+ },
+ "adr001_gate": {
+  "gate": "ADR-001: local decide p50 < 100 ms on Apple M4",
+  "gate_p50_ms": 100.0,
+  "decide_ms_acted_steps": {
+   "n": 18,
+   "mean": 10707.850377222223,
+   "stdev": 5405.60069652032,
+   "min": 6540.5865,
+   "p50": 8056.0680205,
+   "p90": 20511.684408700003,
+   "p95": 22268.058608000003,
+   "p99": 22326.228188,
+   "max": 22340.770583
+  },
+  "passed": false
+ }
+}
