@@ -11,7 +11,10 @@ HTML with the standard library and mutating an in-memory DOM.
 Semantics intentionally mirror snapshot.js, including this port's coverage
 fixes (date/time/range inputs, bare contenteditable, [onclick] rows and
 the #23 second pass -- pointer rows, icon-only controls, concealed-input
-label proxies -- are all enumerated; select execution uses option_index). Interactive behaviour is
+label proxies -- are all enumerated; select execution uses option_index).
+Where they are specified to differ (stylesheets, layout, occlusion,
+scripts) and the parity invariant that is tested instead:
+docs/static-live-parity.md. Interactive behaviour is
 limited to what static fixtures need: fill, check/radio, select, in-page
 anchors, relative-file navigation, and revealing a hidden results region on
 submit (see _submit). There is no JavaScript execution; a fixture that
