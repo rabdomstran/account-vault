@@ -673,3 +673,108 @@ def test_live_non_onclick_clickables_are_offered_and_act(dedicated_chrome):
         assert browser.evaluate("document.querySelector('input[value=payment]').checked") is True
     finally:
         browser.close()
+
+
+# --- static/live parity (docs/static-live-parity.md) ---------------------
+# The invariant: on a page whose every signal is in the markup itself
+# (attributes + inline style -- nothing a stylesheet or layout decides),
+# the live snapshot and the static twin must produce the SAME action
+# table, in the same order, canonicalised to the fields the decider
+# sees. Geometry (rect), node ids, scroll offers and screenshots are
+# live-only by construction and excluded; everything else drifting is
+# a bug in one engine or the other.
+
+PARITY_HTML = """<!doctype html><meta charset="utf-8"><title>Parity</title>
+<a href="#top">Home</a>
+<form>
+ <label>Destination <input type="text" name="dest" value="Lisbon"></label>
+ <label>Check-in <input type="date" name="ci"></label>
+ <label>Guests <select name="guests">
+   <option value="1" selected>One</option>
+   <option value="2">Two</option>
+   <option value="2" disabled>Two (sold out)</option>
+   <optgroup label="Group" disabled><option value="9">Nine</option></optgroup>
+ </select></label>
+ <label><input type="checkbox" name="fc" checked> Free cancellation</label>
+ <label>Notes <textarea name="notes" placeholder="Anything else?">draft</textarea></label>
+ <label>Max price <input type="range" name="mp" value="42"></label>
+ <input type="password" name="pw" aria-label="Password">
+ <input type="hidden" name="tok" value="x">
+ <button type="button" style="display:none">Secret deal</button>
+ <button type="submit">Search</button>
+</form>
+<div contenteditable aria-label="Bio">Hello</div>
+<div onclick="void 0">Pick me</div>
+<ul>
+ <li style="cursor:pointer">Alpha</li>
+ <li style="cursor:pointer">Beta</li>
+ <li style="cursor:pointer">Gamma</li>
+</ul>
+<label><input type="radio" name="size" style="opacity:0;width:0px" checked> Small</label>
+<span data-clickable><svg><title>Settings</title><circle cx="8" cy="8" r="6"/></svg></span>
+"""
+
+STYLESHEET_HTML = """<!doctype html><meta charset="utf-8"><title>Sheet</title>
+<style>.gone{display:none}.rows li{cursor:pointer}</style>
+<button class="gone">Secret deal</button>
+<button>Visible</button>
+<ul class="rows"><li>One</li><li>Two</li><li>Three</li></ul>
+"""
+
+
+def _canonical(page):
+    table = []
+    for action in page["actions"]:
+        if action["kind"] in {"scroll", "wait"}:
+            continue  # scroll offers/viewport are live-only (static has none)
+        table.append(
+            (
+                action["kind"],
+                action.get("role"),
+                action["label"],
+                action.get("value", ""),
+                action.get("checked"),
+                action.get("input_type"),
+                action.get("current_value"),
+            )
+        )
+    return table
+
+
+def test_live_static_parity_on_markup_only_signals(dedicated_chrome):
+    from urllib.parse import quote
+
+    from account_vault import StaticBrowser
+    from account_vault.browser import CdpBrowser
+
+    static_table = _canonical(StaticBrowser.from_html(PARITY_HTML).observe())
+    browser = CdpBrowser("data:text/html," + quote(PARITY_HTML))
+    try:
+        live_table = _canonical(browser.observe(screenshot=False))
+    finally:
+        browser.close()
+    # Same offer, same order: ids are positional, so order is semantics.
+    assert live_table == static_table
+
+
+def test_live_static_stylesheet_signals_are_the_pinned_divergence(dedicated_chrome):
+    # Stylesheets are a live-only signal: offline there is no cascade,
+    # so a class-hidden control and stylesheet-pointer rows are exactly
+    # where the engines are *specified* to disagree
+    # (docs/static-live-parity.md). Pin both sides so the divergence
+    # stays deliberate, and silently widening it fails here.
+    from urllib.parse import quote
+
+    from account_vault import StaticBrowser
+    from account_vault.browser import CdpBrowser
+
+    static_labels = {row[2] for row in _canonical(StaticBrowser.from_html(STYLESHEET_HTML).observe())}
+    browser = CdpBrowser("data:text/html," + quote(STYLESHEET_HTML))
+    try:
+        live_labels = {row[2] for row in _canonical(browser.observe(screenshot=False))}
+    finally:
+        browser.close()
+    assert "Secret deal" not in live_labels and "Secret deal" in static_labels
+    assert {"One", "Two", "Three"} <= live_labels
+    assert not ({"One", "Two", "Three"} & static_labels)
+    assert "Visible" in live_labels and "Visible" in static_labels
