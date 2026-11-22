@@ -543,17 +543,22 @@ def test_live_nested_swallow_exits_without_paying_the_deadline(dedicated_chrome)
         browser.close()
 
 
-def test_live_nested_at_limit_under_contain_still_pays_the_deadline(dedicated_chrome, monkeypatch):
+def test_live_nested_at_limit_under_contain_still_pays_the_deadline(dedicated_chrome):
     # Undecidable by construction: panel at its bottom + contain means
     # no chaining to the root, and no offset anywhere ever moves -- the
     # same observable as a root commit that is merely late. The wait
-    # must pay the (here shortened) deadline rather than guess.
+    # must pay the real deadline rather than guess. (An earlier cut
+    # monkeypatched SCROLL_SETTLE_TIMEOUT down to 1s to keep the test
+    # fast; that proved only "no exit within 1s" and read in the docs
+    # like a product shortening this port's own evidence bar forbids
+    # -- no deadline below 3s without a Linux commit-lag
+    # distribution. The distribution is measured by
+    # test_live_scroll_commit_lag_stays_well_under_the_deadline
+    # below, and this test now pays the honest 3s.)
     from urllib.parse import quote
 
-    import account_vault.browser as browser_module
     from account_vault.browser import CdpBrowser
 
-    monkeypatch.setattr(browser_module, "SCROLL_SETTLE_TIMEOUT", 1.0)
     browser = CdpBrowser("data:text/html," + quote(NESTED_HTML.replace("OVERRIDE", "contain")))
     try:
         browser.observe(screenshot=False)
@@ -567,11 +572,76 @@ def test_live_nested_at_limit_under_contain_still_pays_the_deadline(dedicated_ch
         started = time.perf_counter()
         browser.observe(screenshot=False)
         waited_ms = (time.perf_counter() - started) * 1000
-        assert waited_ms >= 1000, f"undecidable observe returned after {waited_ms:.0f} ms"
+        assert waited_ms >= 2900, f"undecidable observe returned after {waited_ms:.0f} ms"
         assert browser.evaluate("window.scrollY") == 0
         assert browser.evaluate("document.getElementById('panel').scrollTop") == nested_max
     finally:
         browser.close()
+
+
+def test_live_scroll_commit_lag_stays_well_under_the_deadline(dedicated_chrome, capfd):
+    # The evidence bar the port notes set for ever touching
+    # SCROLL_SETTLE_TIMEOUT: a commit-lag distribution from the
+    # Linux CI Chrome that produced the original failure, not
+    # macOS numbers. This test is that distribution's ongoing
+    # source -- it runs in the CI `live (headless Chrome)` gate
+    # on ubuntu-latest and prints one [scroll-commit-lag] line
+    # to the real stdout (capfd.disabled bypasses capture) so
+    # every CI log carries fresh Linux numbers. Locally it
+    # prints macOS numbers, which justify nothing on their own.
+    #
+    # Measured quantity: CDP dispatch (just before the
+    # Input.dispatchMouseEvent call) -> first poll where
+    # window.scrollY differs. The product wait starts later
+    # (after the post-input settle), so this overstates the lag
+    # the deadline must absorb -- conservative in the right
+    # direction. Chromium puts no bound on the loaded tail:
+    # a wheel in a non-passive handler region "might be blocked
+    # on the main thread waiting for non-passive event handlers
+    # to process the wheel/touch events" (cc/input/
+    # main_thread_scrolling_reason.h: kWheelEventHandlerRegion),
+    # the compositor's offset reaches window.scrollY only on a
+    # main-thread commit, and hidden pages may receive no
+    # BeginFrame at all -- so the assertion is max < deadline,
+    # never a claim that some smaller deadline is safe.
+    from urllib.parse import quote
+
+    from account_vault.browser import SCROLL_SETTLE_TIMEOUT, CdpBrowser
+
+    browser = CdpBrowser("data:text/html," + quote(TALL_HTML))
+    lags_ms = []
+    try:
+        browser.observe(screenshot=False)
+        for i in range(40):
+            down = i % 2 == 0
+            y0 = 0 if down else 1120
+            browser.evaluate(f"window.scrollTo(0, {y0})")
+            assert browser.evaluate("window.scrollY") == y0
+            started = time.perf_counter()
+            browser.call(
+                "Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=560 if down else -560
+            )
+            lag = None
+            while time.perf_counter() - started < 5:
+                if browser.evaluate("window.scrollY") != y0:
+                    lag = (time.perf_counter() - started) * 1000
+                    break
+            assert lag is not None, f"wheel {i} never committed within 5s"
+            lags_ms.append(lag)
+    finally:
+        browser.close()
+    lags_ms.sort()
+    p50 = lags_ms[len(lags_ms) // 2]
+    p95 = lags_ms[max(0, int(len(lags_ms) * 0.95) - 1)]
+    with capfd.disabled():
+        print(
+            f"[scroll-commit-lag] n={len(lags_ms)} p50={p50:.1f}ms p95={p95:.1f}ms "
+            f"max={lags_ms[-1]:.1f}ms (deadline {SCROLL_SETTLE_TIMEOUT * 1000:.0f}ms)"
+        )
+    assert lags_ms[-1] < SCROLL_SETTLE_TIMEOUT * 1000, (
+        f"commit lag max {lags_ms[-1]:.0f}ms reached the {SCROLL_SETTLE_TIMEOUT * 1000:.0f}ms deadline; "
+        f"p50={p50:.1f}ms p95={p95:.1f}ms n={len(lags_ms)}"
+    )
 
 
 def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome):
