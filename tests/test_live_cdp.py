@@ -445,12 +445,19 @@ def test_live_agent_recovers_from_a_covered_top_choice(dedicated_chrome):
     decider = PreferCovered()
     browser = CdpBrowser(_covered_url())
     with Agent(
-        _covered_url(), "Do the free action", browser=browser, decider=decider, text_provider=MappingTextProvider({})
+        _covered_url(),
+        "Do the free action",
+        browser=browser,
+        decider=decider,
+        text_provider=MappingTextProvider({}),
+        done_when=lambda page: "Free done" in page["text"],
     ) as agent:
         list(agent.run())
         assert agent.state["status"] == "done"
         assert [h["action"] for h in agent.state["history"]] == ["Free action"]
-        assert decider.calls == 3  # covered refused once, runner-up, DONE
+        # covered refused once, runner-up; the checker then ends the run
+        # from code on the post-action page (no third DONE decision).
+        assert decider.calls == 2
         assert browser.evaluate("window.__clicks") == ["free"]
 
 
@@ -548,7 +555,12 @@ def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome
     url = "data:text/html," + quote(TALL_HTML)
     browser = CdpBrowser(url)
     with Agent(
-        url, "Click the Deep target button", browser=browser, decider=decider, text_provider=MappingTextProvider({})
+        url,
+        "Click the Deep target button",
+        browser=browser,
+        decider=decider,
+        text_provider=MappingTextProvider({}),
+        done_when=lambda page: "Deep done" in page["text"],
     ) as agent:
         list(agent.run())
         # Carry the run's own evidence in the message: which guard (or

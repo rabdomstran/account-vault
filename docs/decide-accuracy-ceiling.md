@@ -598,7 +598,10 @@ definitionally unchanged:**
   `MissingValueError`→`blocked` `src/account_vault/agent.py:419-428`).
   COST/safety; ranking untouched.
 
-**Two correctness gaps found by the audit (cheap, load-bearing):**
+**Two correctness gaps found by the audit (cheap, load-bearing) —
+both fixed 2026-11-22 (gate on both confidences by default at 0.5 with
+`on_uncertain`; checker-owned completion via `Agent(done_when=…)`);
+the text below is the pre-fix audit record:**
 
 1. **Confidence gate is off, operation-only, and escalation-free.**
    `min_confidence=0.0` default (`src/account_vault/agent.py:98,126`);
