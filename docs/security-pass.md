@@ -14,8 +14,8 @@ the CodeQL-coverage PR that added this file.
   tests for `evil.test/api.deepseek.com/` and
   `api.deepseek.com.evil.test`. Open alerts at pass time: **0**.
 - Gap: only `python` was analyzed. In-page JS and workflow files
-  now scanned by a second job (this PR). First-run alerts, if any,
-  get appended below.
+  now scanned by a second job (this PR); first run: **0 alerts**
+  in both new languages.
 
 ## Dependencies (OSV vs `uv export --locked --all-extras --all-groups`, 85 pkgs)
 
