@@ -644,6 +644,78 @@ def test_live_scroll_commit_lag_stays_well_under_the_deadline(dedicated_chrome, 
     )
 
 
+def test_live_scroll_commit_lag_under_main_thread_load(dedicated_chrome, capfd):
+    # The loaded half of the deadline evidence (the idle half is
+    # test_live_scroll_commit_lag_stays_well_under_the_deadline
+    # above). A non-passive wheel handler that busy-waits is
+    # Chromium's kWheelEventHandlerRegion case: the compositor
+    # "might be blocked on the main thread waiting for
+    # non-passive event handlers to process the wheel/touch
+    # events" (cc/input/main_thread_scrolling_reason.h), and
+    # scrollY only updates on the main-thread commit after it.
+    # The product's polls queue behind the same work (an
+    # evaluate is main-thread too), so dispatch -> first
+    # visible scrollY change is again the honest quantity.
+    # Expected, and asserted: lag tracks the load and crosses
+    # the 3s deadline once the handler alone blocks longer --
+    # the deadline is headroom for idle lag, never a bound on
+    # loaded lag. Prints [scroll-commit-lag-loaded] into the
+    # CI live log like the idle sample.
+    from urllib.parse import quote
+
+    from account_vault.browser import SCROLL_SETTLE_TIMEOUT, CdpBrowser
+
+    browser = CdpBrowser("data:text/html," + quote(TALL_HTML))
+    medians = {}
+    try:
+        browser.observe(screenshot=False)
+        browser.evaluate(
+            "window.__wheelBusyMs = 0;"
+            "document.addEventListener('wheel', () => {"
+            "  const end = performance.now() + window.__wheelBusyMs;"
+            "  while (performance.now() < end) {}"
+            "}, {passive: false})"
+        )
+        i = 0
+        for busy_ms in (0, 500, 1500, 3200):
+            lags_ms = []
+            for _ in range(3):
+                down = i % 2 == 0
+                i += 1
+                y0 = 0 if down else 1120
+                browser.evaluate(f"window.scrollTo(0, {y0}); window.__wheelBusyMs = {busy_ms}")
+                assert browser.evaluate("window.scrollY") == y0
+                started = time.perf_counter()
+                browser.call(
+                    "Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=560 if down else -560
+                )
+                lag = None
+                while time.perf_counter() - started < 10:
+                    if browser.evaluate("window.scrollY") != y0:
+                        lag = (time.perf_counter() - started) * 1000
+                        break
+                assert lag is not None, f"busy={busy_ms}ms wheel never committed within 10s"
+                lags_ms.append(lag)
+            lags_ms.sort()
+            medians[busy_ms] = lags_ms[len(lags_ms) // 2]
+            with capfd.disabled():
+                print(
+                    f"[scroll-commit-lag-loaded] busy={busy_ms}ms n={len(lags_ms)} "
+                    f"median={medians[busy_ms]:.1f}ms max={lags_ms[-1]:.1f}ms "
+                    f"(deadline {SCROLL_SETTLE_TIMEOUT * 1000:.0f}ms)"
+                )
+    finally:
+        browser.close()
+    # Lag tracks the load (a broken measurement -- passive
+    # handler, swallowed wheel -- would read flat), and a
+    # handler that alone outlasts the deadline pushes the
+    # visible commit past it: the loaded tail is unbounded
+    # by construction, which is the measured fact the port
+    # notes record.
+    assert medians[3200] - medians[0] > 2500, f"lag did not track load: {medians}"
+    assert medians[3200] > SCROLL_SETTLE_TIMEOUT * 1000, f"loaded lag stayed under the deadline: {medians}"
+
+
 def test_live_agent_scrolls_past_first_viewports_to_deep_target(dedicated_chrome):
     from urllib.parse import quote
 
